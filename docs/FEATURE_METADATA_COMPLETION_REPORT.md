@@ -92,5 +92,13 @@ GUI起動直前に外部Providerを再走査する。これによりMelonLoader�
 - `src/SettingsGuiController.cs`
 - `settings/Program.cs`
 - `tools/gui-fixtures/features-20.json`
-- `C:/SMT3Modding/NocturneModernGameplay/src/GameplayFeatureRegistry.cs`
-- `C:/SMT3Modding/NocturneModernGameplay/src/GuiMetadataBridge.cs`
+- external `NocturneModernGameplay` repository: `GameplayFeatureRegistry.cs`
+- external `NocturneModernGameplay` repository: `GuiMetadataBridge.cs`
+
+## 2026-08-23 addendum
+
+上記「Gameplayの実機能はまだ0件」は、2026-08-22の完了報告時点の記録として維持する。
+
+2026-08-23、外部`NocturneModernGameplay`プロジェクトに最初の実験Feature **Skill Mutation: Learn as New** が登録された。スキル変化時に元スキルを残し、変化後スキルを新規習得として扱う機能である。空き枠への追加は実機成功済み。8枠満杯時にゲーム標準の忘却選択画面を再利用する経路は、複数仲魔の結果処理、表示対象、メッセージ、終了遷移を含めて調査・試験中である。
+
+したがってGameplay Feature数は0件ではなくなったが、このFeatureを完成・安定・正式公開済みとは記載しない。Gameplayは引き続き別リポジトリ、別DLL、別配布単位であり、本Controllerリポジトリにはそのソースやバイナリを含めない。
