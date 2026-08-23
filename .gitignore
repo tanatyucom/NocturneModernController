@@ -5,6 +5,7 @@ artifacts/
 helper/bin/
 helper/obj/
 .analysis_tmp/
+.tmp_gameplay_hacks_reference/
 *.user
 *.suo
 *.log

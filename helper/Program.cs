@@ -42,6 +42,7 @@ internal static class Program
         view.Write(32, 0);
         int lastMouseTick = 0;
         bool cursorHidden = false;
+        int trackedGamePid = 0;
 
         try
         {
@@ -63,6 +64,15 @@ internal static class Program
                     : SdlNative.SDL_GetGamepadAxis(gamepad, 3);
 
                 int gamePid = view.ReadInt32(32);
+                if (gamePid > 0)
+                {
+                    trackedGamePid = gamePid;
+                }
+                if (trackedGamePid > 0 && !ParentIsAlive(trackedGamePid))
+                {
+                    Log("GAME PROCESS EXIT detected; helper stopping. pid=" + trackedGamePid);
+                    break;
+                }
                 bool cameraContextActive = view.ReadInt32(28) != 0 &&
                     gamePid > 0 &&
                     IsForegroundProcess(gamePid);

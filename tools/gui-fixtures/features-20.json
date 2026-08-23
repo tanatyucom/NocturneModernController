@@ -1,0 +1,30 @@
+[
+  {
+    "ProviderId": "layout_test",
+    "ProviderName": "Layout Test Provider",
+    "Version": "test-only",
+    "Error": "",
+    "Features": [
+      { "Id": "feature_01", "Name": "Feature 01", "Description": "短い説明文です。", "Enabled": true, "Category": "QoL", "SortOrder": 1 },
+      { "Id": "feature_02", "Name": "Feature 02", "Description": "説明文が長い場合でもカード内で折り返され、隣のカードやスイッチと重ならないことを確認するためのテスト文章です。", "Enabled": false, "Category": "Gameplay Change", "SortOrder": 2 },
+      { "Id": "feature_03", "Name": "Feature 03", "Description": "短い説明文です。", "Enabled": true, "Category": "Balance Change", "SortOrder": 3 },
+      { "Id": "feature_04", "Name": "Feature 04", "Description": "短い説明文です。", "Enabled": false, "Category": "QoL", "SortOrder": 4 },
+      { "Id": "feature_05", "Name": "Feature 05", "Description": "短い説明文です。", "Enabled": true, "Category": "Gameplay Change", "SortOrder": 5 },
+      { "Id": "feature_06", "Name": "Feature 06", "Description": "短い説明文です。", "Enabled": false, "Category": "Balance Change", "SortOrder": 6 },
+      { "Id": "feature_07", "Name": "Feature 07", "Description": "短い説明文です。", "Enabled": true, "Category": "QoL", "SortOrder": 7 },
+      { "Id": "feature_08", "Name": "Feature 08", "Description": "短い説明文です。", "Enabled": false, "Category": "Gameplay Change", "SortOrder": 8 },
+      { "Id": "feature_09", "Name": "Feature 09", "Description": "短い説明文です。", "Enabled": true, "Category": "Balance Change", "SortOrder": 9 },
+      { "Id": "feature_10", "Name": "Feature 10", "Description": "短い説明文です。", "Enabled": false, "Category": "QoL", "SortOrder": 10 },
+      { "Id": "feature_11", "Name": "Feature 11", "Description": "短い説明文です。", "Enabled": true, "Category": "Gameplay Change", "SortOrder": 11 },
+      { "Id": "feature_12", "Name": "Feature 12", "Description": "短い説明文です。", "Enabled": false, "Category": "Balance Change", "SortOrder": 12 },
+      { "Id": "feature_13", "Name": "Feature 13", "Description": "短い説明文です。", "Enabled": true, "Category": "QoL", "SortOrder": 13 },
+      { "Id": "feature_14", "Name": "Feature 14", "Description": "短い説明文です。", "Enabled": false, "Category": "Gameplay Change", "SortOrder": 14 },
+      { "Id": "feature_15", "Name": "Feature 15", "Description": "短い説明文です。", "Enabled": true, "Category": "Balance Change", "SortOrder": 15 },
+      { "Id": "feature_16", "Name": "Feature 16", "Description": "短い説明文です。", "Enabled": false, "Category": "QoL", "SortOrder": 16 },
+      { "Id": "feature_17", "Name": "Feature 17", "Description": "短い説明文です。", "Enabled": true, "Category": "Gameplay Change", "SortOrder": 17 },
+      { "Id": "feature_18", "Name": "Feature 18", "Description": "短い説明文です。", "Enabled": false, "Category": "Balance Change", "SortOrder": 18 },
+      { "Id": "feature_19", "Name": "Feature 19", "Description": "短い説明文です。", "Enabled": true, "Category": "QoL", "SortOrder": 19 },
+      { "Id": "feature_20", "Name": "Feature 20", "Description": "最終項目です。縦スクロールでここまで到達できることを確認します。", "Enabled": false, "Category": "Gameplay Change", "SortOrder": 20 }
+    ]
+  }
+]

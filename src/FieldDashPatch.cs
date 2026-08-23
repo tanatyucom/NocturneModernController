@@ -12,7 +12,12 @@ namespace NocturneModernController
     internal static class FieldDashPatch
     {
         private const int VirtualKeyDash = 0x50; // P
-        private const float Multiplier = 1.60f;
+        // Dungeon doors use thin event/collision volumes.  At x1.60 the
+        // player can cross one between field ticks, so keep dungeon movement
+        // below that tunnelling threshold.  The world map has no such doors
+        // and retains the established x1.60 feel.
+        private const float DungeonMultiplier = 1.50f;
+        private const float WorldMapMultiplier = 1.60f;
         private const int NormalSpeedRva = 0x02AF1FF8;
         private const int AlternateSpeedRva = 0x028C7528;
         private const int WorldMapSpeedRva = 0x028C9E30;
@@ -61,9 +66,12 @@ namespace NocturneModernController
 
         private static bool UpdateDashState()
         {
-            bool leftTrigger = IsPadMapHeld(Il2Cpplibsdf_H.SDF_PADMAP.SDF_PADMAP_L2);
-            bool rightTrigger = IsPadMapHeld(Il2Cpplibsdf_H.SDF_PADMAP.SDF_PADMAP_R2);
-            bool comboHeld = leftTrigger && rightTrigger;
+            bool dashHeld = ModernControllerApi.IsHeld(
+                BuiltInControllerActions.Dash,
+                ControllerContext.Field);
+            bool comboHeld = ModernControllerApi.IsHeld(
+                BuiltInControllerActions.DashKeep,
+                ControllerContext.Field);
             if (comboHeld && !_comboWasHeld)
             {
                 _dashLatched = !_dashLatched;
@@ -73,13 +81,17 @@ namespace NocturneModernController
             _comboWasHeld = comboHeld;
 
             bool keyboardHeld = (GetAsyncKeyState(VirtualKeyDash) & 0x8000) != 0;
-            return keyboardHeld || leftTrigger || rightTrigger || _dashLatched;
+            return keyboardHeld || dashHeld || _dashLatched;
         }
 
         private static void Prefix()
         {
             _lastExplorationTick = Environment.TickCount;
             RestoreSpeeds();
+            if (SettingsGuiController.IsOpen || !ControllerSettings.Current.DashEnabled)
+            {
+                return;
+            }
             if (!UpdateDashState())
             {
                 LogRelease();
@@ -93,17 +105,19 @@ namespace NocturneModernController
 
             // Wm2 consumes its own movement-step constant. It is harmless to
             // patch it around the dispatcher when another field mode is active.
-            WriteFloat(_worldMapSpeedAddress, ExpectedWorldMapSpeed * Multiplier);
+            WriteFloat(_worldMapSpeedAddress, ExpectedWorldMapSpeed * WorldMapMultiplier);
             if (IsSafeNormalMovement())
             {
-                WriteFloat(_normalSpeedAddress, ExpectedNormalSpeed * Multiplier);
-                WriteFloat(_alternateSpeedAddress, ExpectedAlternateSpeed * Multiplier);
+                WriteFloat(_normalSpeedAddress, ExpectedNormalSpeed * DungeonMultiplier);
+                WriteFloat(_alternateSpeedAddress, ExpectedAlternateSpeed * DungeonMultiplier);
             }
             _patchActive = true;
             if (!_loggedHeld)
             {
                 _loggedHeld = true;
-                MelonLogger.Msg("[NocturneModernController] Dash ON (P/LT/RT, dungeon/world map x1.60)");
+                MelonLogger.Msg(
+                    "[NocturneModernController] Dash ON " +
+                    "(P/LT/RT, dungeon x1.50 / world map x1.60)");
             }
         }
 
