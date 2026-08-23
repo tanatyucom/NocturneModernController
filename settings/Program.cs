@@ -653,8 +653,9 @@ internal sealed class ControllerCanvas : Panel
         using var subFont = new Font("Yu Gothic UI", 9F);
         using var mainText = new SolidBrush(Color.FromArgb(233, 239, 245));
         using var subText = new SolidBrush(Color.FromArgb(160, 174, 188));
-        g.DrawString(Japanese ? "汎用ゲームパッド" : "Generic Gamepad", titleFont, mainText, 18, 14);
-        g.DrawString(Japanese ? "ボタンをクリックして場面別の機能を割り当て" : "Click a button to assign context-specific actions", subFont, subText, 18, 40);
+        string diagramTitle = Japanese ? "汎用ゲームパッド" : "Generic Gamepad";
+        SizeF diagramTitleSize = g.MeasureString(diagramTitle, titleFont);
+        g.DrawString(diagramTitle, titleFont, mainText, (Width - diagramTitleSize.Width) / 2F, 14);
         g.DrawString(Japanese ? "割当内容はボタンへマウスを重ねると表示されます" : "Hover over a button to view its bindings", subFont, subText, 18, 408);
     }
 }
