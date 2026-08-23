@@ -19,7 +19,7 @@
 
 - **Dash**: FIELD/DUNGEONとワールドマップで移動速度を上げる。標準はLTまたはRT長押し、LT+RTでKeep切替
 - **Quick Heal**: 探索中に、所持回復スキルと実際のMPを使って前衛・控えを回復。所持している場合だけ蘇生・状態異常回復を行う
-- **Force Encounter**: 通常エンカウント可能な場所で、ゲーム本来の遭遇判定へ戦闘開始要求を渡す
+- **Force Encounter（Xボタンで即戦闘）**: 通常エンカウント可能な場所でXを押すと、ゲーム本来の遭遇判定へ即時の戦闘開始要求を渡す
 - **Smart Auto Battle**: ゲーム標準Auto経路を使い、弱点・耐性・反射・吸収・MP・後続メンバーの撃破予測を考慮して行動を選ぶ
 - **統合設定GUI**: 右スティック設定、キー割当、機能ON/OFF、外部Provider表示を一画面で管理
 
@@ -79,7 +79,7 @@ PDBは開発用で、通常配布の実行には不要です。Controller DLLは
 - `Press`、`Hold`、`LongPress`、`Toggle`、`DoublePress`のアクション定義
 - R3を含むボタンを割当入力として扱う（ゲーム標準の「視点を正面に戻す」など、標準アクションの追加登録は今後の拡張方針）
 
-既定割当はDashがLT/RT、Dash KeepがLT+RT、Quick HealがRB、Force EncounterがX、設定画面がSelect長押しです。コンテキスト分離により、FIELDの割当がBATTLEのRB Passなどを無条件に置き換えないようにしています。
+既定割当はDashがLT/RT、Dash KeepがLT+RT、Quick HealがRB、Xボタンの即戦闘がForce Encounter、設定画面がSelect長押しです。コンテキスト分離により、FIELDの割当がBATTLEのRB Passなどを無条件に置き換えないようにしています。
 
 ## MOD機能タブ
 
@@ -104,7 +104,7 @@ Feature 0件、Controller 5件、検証用20件の表示経路とスクロール
 - 病院内とワールドマップでDash
 - LT/RT長押し、LT+RTのDash Keep、速度調整
 - Quick Healの所持スキル・MPに従う連続回復
-- 通常遭遇判定を利用するForce Encounter
+- 通常エンカウント可能な場所で、Xボタンから即時の戦闘開始を要求するForce Encounter
 - ゲーム標準Auto経路を利用するSmart Auto BattleとAuto中だけの速度変更・終了時復元
 - 統合設定GUI、キー割当、Controller Feature 5件と外部Provider検出
 
