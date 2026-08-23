@@ -21,6 +21,7 @@ namespace NocturneModernController
     {
         internal static ControllerSettings Current { get; } = new ControllerSettings();
 
+        public string UiLanguage { get; set; } = "Auto";
         public RightStickMode RightStickMode { get; set; } = RightStickMode.FullCamera;
         public bool InvertX { get; set; }
         public bool InvertY { get; set; }
@@ -61,6 +62,7 @@ namespace NocturneModernController
                 }
 
                 Current.RightStickMode = loaded.RightStickMode;
+                Current.UiLanguage = NormalizeLanguage(loaded.UiLanguage);
                 Current.InvertX = loaded.InvertX;
                 Current.InvertY = loaded.InvertY;
                 Current.SensitivityX = Math.Clamp(loaded.SensitivityX, 0.1f, 3.0f);
@@ -87,5 +89,16 @@ namespace NocturneModernController
             var options = new JsonSerializerOptions { WriteIndented = true };
             File.WriteAllText(SettingsPath, JsonSerializer.Serialize(Current, options));
         }
+
+        internal static bool UseJapanese => Current.UiLanguage.Equals("Japanese", StringComparison.OrdinalIgnoreCase) ||
+            (Current.UiLanguage.Equals("Auto", StringComparison.OrdinalIgnoreCase) &&
+             System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName.Equals("ja", StringComparison.OrdinalIgnoreCase));
+
+        private static string NormalizeLanguage(string? language) => language?.ToLowerInvariant() switch
+        {
+            "japanese" => "Japanese",
+            "english" => "English",
+            _ => "Auto"
+        };
     }
 }

@@ -1,5 +1,5 @@
 param(
-    [string]$Version = '2.0.0',
+    [string]$Version = '2.0.1',
     [switch]$NoBuild
 )
 
@@ -36,6 +36,7 @@ $requiredFiles = @(
     (Join-Path $settingsOutput 'NocturneModernController.Settings.runtimeconfig.json'),
     $sdlPath,
     (Join-Path $repositoryRoot 'README.md'),
+    (Join-Path $repositoryRoot 'README_EN.md'),
     (Join-Path $repositoryRoot 'CHANGELOG.md'),
     (Join-Path $repositoryRoot 'LICENSE'),
     (Join-Path $repositoryRoot 'THIRD_PARTY_NOTICES.txt')
@@ -80,6 +81,7 @@ foreach ($file in $settingsFiles) {
 
 Copy-Item -LiteralPath $sdlPath -Destination $helperRoot
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'README.md') -Destination (Join-Path $stageRoot 'README.md')
+Copy-Item -LiteralPath (Join-Path $repositoryRoot 'README_EN.md') -Destination (Join-Path $stageRoot 'README_EN.md')
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'CHANGELOG.md') -Destination $stageRoot
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'LICENSE') -Destination (Join-Path $stageRoot 'LICENSE.txt')
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'THIRD_PARTY_NOTICES.txt') -Destination $stageRoot
