@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.1 - 2026-08-23
+
+- Added automatic Japanese/English settings UI selection based on the Windows UI language.
+- Added a saved Auto/Japanese/English language selector to the settings window.
+- Localized built-in action names, binding dialogs, controller diagram text, and feature descriptions.
+- Added an English README for international distribution.
+
 ## 2.0.0 - 2026-08-23
 
 First public release under the Nocturne Modern Controller name. The major

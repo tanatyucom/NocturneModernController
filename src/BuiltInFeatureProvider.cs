@@ -9,27 +9,28 @@ namespace NocturneModernController
 
         public string ProviderId => "nocturne_modern_controller";
         public string ProviderName => "Nocturne Modern Controller";
-        public string Version => "1.0.0";
+        public string Version => "2.0.1";
 
         public IReadOnlyList<FeatureMetadata> GetFeatures()
         {
             ControllerSettings settings = ControllerSettings.Current;
+            bool ja = ControllerSettings.UseJapanese;
             return new[]
             {
                 Feature("right_stick_camera", "Right Stick Camera",
-                    "右スティックでダンジョンの旋回・カメラ上下を操作します。",
+                    ja ? "右スティックでダンジョンの旋回・カメラ上下を操作します。" : "Use the right stick for dungeon turning and vertical camera control.",
                     "QoL", settings.RightStickEnabled, 10),
                 Feature("dash", "Dash",
-                    "ダンジョンとワールドマップで移動速度を上げます。",
+                    ja ? "ダンジョンとワールドマップで移動速度を上げます。" : "Increase movement speed in dungeons and on the world map.",
                     "QoL", settings.DashEnabled, 20),
                 Feature("quick_heal", "Quick Heal",
-                    "探索中に回復スキルを使ってパーティをまとめて回復します。",
+                    ja ? "探索中に回復スキルを使ってパーティをまとめて回復します。" : "Use learned recovery skills and real MP to heal the party while exploring.",
                     "QoL", settings.QuickHealEnabled, 30),
                 Feature("force_encounter", "Force Encounter",
-                    "通常エンカウント可能な場所で戦闘開始を要求します。",
+                    ja ? "通常エンカウント可能な場所で戦闘開始を要求します。" : "Request a battle only where normal encounters are available.",
                     "Gameplay Change", settings.ForceEncounterEnabled, 40),
                 Feature("smart_auto", "Smart Auto Battle",
-                    "弱点・耐性・MP・通常攻撃予測を使って標準Autoのコマンドを選択します。",
+                    ja ? "弱点・耐性・MP・通常攻撃予測を使って標準Autoのコマンドを選択します。" : "Choose standard Auto commands using weaknesses, resistances, MP, and attack predictions.",
                     "Gameplay Change", settings.SmartAutoEnabled, 50)
             };
         }
@@ -63,7 +64,7 @@ namespace NocturneModernController
             Category = category,
             Enabled = enabled,
             SortOrder = sortOrder,
-            Version = "1.0.0"
+            Version = "2.0.1"
         };
     }
 }

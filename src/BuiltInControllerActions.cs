@@ -12,12 +12,13 @@ namespace NocturneModernController
 
         internal static void Register(bool settingsGuiAvailable)
         {
+            bool ja = ControllerSettings.UseJapanese;
             ModernControllerApi.RegisterAction(new ControllerActionDefinition
             {
                 ModId = "NocturneModernController",
                 ActionId = Dash,
-                DisplayName = "ダッシュ",
-                Description = "押している間、FIELD/DUNGEONの移動速度を上げます。",
+                DisplayName = ja ? "ダッシュ" : "Dash",
+                Description = ja ? "押している間、FIELD/DUNGEONの移動速度を上げます。" : "Increase movement speed in FIELD/DUNGEON while held.",
                 Contexts = ControllerContext.Field,
                 Behavior = ControllerActionBehavior.Hold,
                 DefaultBindings = new List<ControllerDefaultBinding>
@@ -30,8 +31,8 @@ namespace NocturneModernController
             {
                 ModId = "NocturneModernController",
                 ActionId = DashKeep,
-                DisplayName = "ダッシュ固定切替",
-                Description = "ダッシュ固定のON/OFFを切り替えます。",
+                DisplayName = ja ? "ダッシュ固定切替" : "Toggle Dash Keep",
+                Description = ja ? "ダッシュ固定のON/OFFを切り替えます。" : "Toggle persistent dash on or off.",
                 Contexts = ControllerContext.Field,
                 Behavior = ControllerActionBehavior.Press,
                 DefaultBindings = new List<ControllerDefaultBinding>
@@ -43,8 +44,8 @@ namespace NocturneModernController
             {
                 ModId = "NocturneModernController",
                 ActionId = QuickHeal,
-                DisplayName = "クイックヒール",
-                Description = "所持スキルとMPを使って仲間全員を回復します。",
+                DisplayName = ja ? "クイックヒール" : "Quick Heal",
+                Description = ja ? "所持スキルとMPを使って仲間全員を回復します。" : "Use learned recovery skills and real MP to heal the party.",
                 Contexts = ControllerContext.Field,
                 Behavior = ControllerActionBehavior.Press,
                 DefaultBindings = new List<ControllerDefaultBinding>
@@ -56,8 +57,8 @@ namespace NocturneModernController
             {
                 ModId = "NocturneModernController",
                 ActionId = ForceEncounter,
-                DisplayName = "強制エンカウント",
-                Description = "通常エンカウント可能な場所で標準の遭遇判定を発生させます。",
+                DisplayName = ja ? "強制エンカウント" : "Force Encounter",
+                Description = ja ? "通常エンカウント可能な場所で標準の遭遇判定を発生させます。" : "Request a standard encounter where normal encounters are available.",
                 Contexts = ControllerContext.Field,
                 Behavior = ControllerActionBehavior.Press,
                 DefaultBindings = new List<ControllerDefaultBinding>
@@ -71,8 +72,8 @@ namespace NocturneModernController
                 {
                     ModId = "NocturneModernController",
                     ActionId = OpenSettings,
-                    DisplayName = "設定画面を開く",
-                    Description = "統合キーコンフィグを開きます。",
+                    DisplayName = ja ? "設定画面を開く" : "Open Settings",
+                    Description = ja ? "統合キーコンフィグを開きます。" : "Open the integrated controller settings window.",
                     Contexts = ControllerContext.All,
                     Behavior = ControllerActionBehavior.LongPress,
                     DefaultBindings = new List<ControllerDefaultBinding>
