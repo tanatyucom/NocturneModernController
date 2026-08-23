@@ -1,8 +1,9 @@
 # Changelog
 
-## 1.0.0 - 2026-08-23
+## 2.0.0 - 2026-08-23
 
-Initial public release.
+First public release under the Nocturne Modern Controller name. The major
+version distinguishes this package from the repository's earlier v1.0.0 tag.
 
 - Added SDL3-based generic controller input helper.
 - Added native right-stick horizontal turn and vertical camera control.
