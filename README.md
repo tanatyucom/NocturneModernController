@@ -2,6 +2,8 @@
 
 『真・女神転生III NOCTURNE HD REMASTER』（Steam版）の入力と探索操作を現代的にする、Windows向けMelonLoader MODです。右スティックカメラ、ダッシュ、探索支援、Smart Auto Battleに加え、場面別キー割当と外部MOD連携に対応した統合設定GUIを提供します。
 
+現在の公開バージョンは **2.0.0** です。変更内容は[CHANGELOG](CHANGELOG.md)を参照してください。
+
 ## 主な機能
 
 ### 右スティックと汎用入力
@@ -141,6 +143,12 @@ dotnet build .\settings\NocturneModernController.Settings.csproj -c Release --no
 
 `SDL3.dll`はHelperプロジェクトが生成するファイルではありません。`tools/ControllerSideRead/Fetch-Sdl.ps1`は公式SDL 3.4.14 x64 archiveを固定SHA-256で検証して調査用`native/SDL3.dll`を取得します。配布時はライセンス条件を確認し、Helperフォルダーへ同梱してください。
 
+公開用ZIPは次のコマンドで生成できます。出力先は`artifacts/release/NocturneModernController-v2.0.0.zip`です。
+
+```powershell
+.\tools\Build-Release.ps1 -Version 2.0.0
+```
+
 ## 調査・開発記録
 
 - [開発履歴](docs/DEVELOPMENT_HISTORY.md)
@@ -152,7 +160,7 @@ dotnet build .\settings\NocturneModernController.Settings.csproj -c Release --no
 
 ## ライセンス
 
-本リポジトリのコードは[LICENSE](LICENSE)に従います。SDLおよび第三者資料にはそれぞれのライセンスが適用されます。第三者MOD調査の扱いは[第三者ソース調査ポリシー](docs/THIRD_PARTY_RESEARCH_POLICY.md)を参照してください。
+本リポジトリのコードは[LICENSE](LICENSE)に従います。SDLおよび第三者資料にはそれぞれのライセンスが適用されます。配布物には[THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.txt)を同梱します。第三者MOD調査の扱いは[第三者ソース調査ポリシー](docs/THIRD_PARTY_RESEARCH_POLICY.md)を参照してください。
 
 ## 注意事項
 
