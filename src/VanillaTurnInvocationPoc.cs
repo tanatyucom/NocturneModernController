@@ -81,6 +81,7 @@ namespace NocturneModernController
             ref bool __result)
         {
             if (__0 != 0 ||
+                !ControllerSettings.Current.RightStickEnabled ||
                 !FieldDashPatch.IsExplorationActive ||
                 !LegacyShoulderTurnSuppression.IsSuppressedExplorationAction(__1))
             {
@@ -98,12 +99,6 @@ namespace NocturneModernController
             SIPressType __2,
             ref bool __result)
         {
-            if (__result && __0 == 0 && __2 == SIPressType.DOWN &&
-                __1 == SIActionName.FD_Return_Front)
-            {
-                VerticalCameraInjectionPatch.NotifyNativeFrontReset();
-            }
-
             if (__result || __0 != 0 || __2 != SIPressType.DOWN)
             {
                 return;

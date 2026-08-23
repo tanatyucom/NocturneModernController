@@ -18,15 +18,19 @@
     <!-- Retained as crash-investigation source only; never compile this native hook. -->
     <Compile Remove="src\NativePadCheckHook.cs" />
     <Compile Remove="helper\**\*.cs" />
+    <Compile Remove="settings\**\*.cs" />
     <Compile Remove="tools\**\*.cs" />
     <Compile Remove="analysis\**\*.cs" />
     <Compile Remove="src\FieldCameraMainProbe.cs" />
     <Compile Remove="src\RightStickTurnInput.cs" />
     <Compile Remove="src\XInputReader.cs" />
     <!-- Investigation-only telemetry retained in source, excluded from releases. -->
-    <Compile Remove="src\CameraVectorProbe.cs" />
     <Compile Remove="src\NativeMouseVerticalCameraPoc.cs" />
     <Compile Remove="src\VerticalCameraStateProbe.cs" />
+    <Compile Remove="src\VerticalCameraInjectionPatch.cs" />
+    <Compile Remove="src\ForceEncounterTelemetry.cs" />
+    <Compile Remove="src\CameraVectorProbe.cs" />
+    <Compile Remove="src\AnalogChannelTelemetry.cs" />
 
     <Reference Include="MelonLoader">
       <HintPath>$(GameDir)\MelonLoader\net6\MelonLoader.dll</HintPath>

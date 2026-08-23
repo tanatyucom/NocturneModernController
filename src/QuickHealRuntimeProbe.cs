@@ -27,9 +27,9 @@ namespace NocturneModernController
             bool held;
             try
             {
-                held = dds3PadManager.DDS3_PADCHECK_PRESS(
-                    Il2Cpplibsdf_H.SDF_PADMAP.SDF_PADMAP_R1,
-                    0);
+                held = ModernControllerApi.IsHeld(
+                    BuiltInControllerActions.QuickHeal,
+                    ControllerContext.Field);
             }
             catch (Exception)
             {
@@ -159,70 +159,34 @@ namespace NocturneModernController
                         continue;
                     }
 
-                    // Prefer reserve demons, then active demons, and use the
-                    // protagonist only as the final fallback. Bit 0x2 is set
-                    // by cmpChgFlagDevilToParty when a demon joins the active party.
-                    for (int sourcePriority = 0; sourcePriority < 3; sourcePriority++)
+                    RecoveryCandidate? candidate = FindBestHpRecoveryCandidate(
+                        global,
+                        target,
+                        target.maxhp - target.hp);
+                    if (candidate == null)
                     {
-                        for (int sourceStockIndex = 0; sourceStockIndex < global.stockcnt; sourceStockIndex++)
-                        {
-                            int sourceIndex = stocklist[sourceStockIndex];
-                            if (sourceIndex < 0 || sourceIndex >= units.Length)
-                            {
-                                continue;
-                            }
-                            Il2Cppnewdata_H.datUnitWork_t? source = units[sourceIndex];
-                            if (source == null || source.Pointer == IntPtr.Zero || source.hp == 0 ||
-                                GetSourcePriority(sourceIndex, source) != sourcePriority)
-                            {
-                                continue;
-                            }
-
-                            int skillCount = Math.Min(source.skillcnt, source.skill.Length);
-                            for (int skillIndex = 0; skillIndex < skillCount; skillIndex++)
-                            {
-                                ushort skillId = unchecked((ushort)source.skill[skillIndex]);
-                                try
-                                {
-                                    int effect = datCalc.datGetSkillKouka(skillId, 0, source, target);
-                                    if (effect <= 0 || cmpMisc.cmpChkSkillCost(skillId, source) == 0)
-                                    {
-                                        continue;
-                                    }
-
-                                    ushort hpBefore = target.hp;
-                                    ushort mpBefore = source.mp;
-                                    int cost = cmpDrawSkill.cmpGetSkillCost(skillId, source);
-                                    cmpMisc.cmpRecover(skillId, source, target);
-                                    if (target.hp != hpBefore && cost > 0 && source.mp >= cost)
-                                    {
-                                        source.mp = unchecked((ushort)(source.mp - cost));
-                                    }
-                                    MelonLogger.Msg(
-                                        $"[NocturneModernController] Q7 AUTO-RECOVER " +
-                                        $"sourceKind={GetSourceKind(sourcePriority)} " +
-                                        $"skill={skillId} src={sourceIndex} dst={targetIndex} " +
-                                        $"hp={hpBefore}->{target.hp}/{target.maxhp} " +
-                                        $"cost={cost} mp={mpBefore}->{source.mp}");
-
-                                    _sequenceActionCount++;
-                                    if (_sequenceActionCount >= MaximumActionsPerSequence)
-                                    {
-                                        StopHealSequence("safety action limit reached");
-                                    }
-                                    else
-                                    {
-                                        _nextHealTick = unchecked(Environment.TickCount + HealIntervalMilliseconds);
-                                    }
-                                    return;
-                                }
-                                catch (Exception)
-                                {
-                                    // Passive and non-camp skills can reject effect inspection.
-                                }
-                            }
-                        }
+                        continue;
                     }
+
+                    ushort hpBefore = target.hp;
+                    ushort mpBefore = candidate.Source.mp;
+                    cmpMisc.cmpRecover(candidate.SkillId, candidate.Source, target);
+                    if (target.hp != hpBefore && candidate.Cost > 0 &&
+                        candidate.Source.mp >= candidate.Cost)
+                    {
+                        candidate.Source.mp = unchecked(
+                            (ushort)(candidate.Source.mp - candidate.Cost));
+                    }
+                    MelonLogger.Msg(
+                        $"[NocturneModernController] Q7 AUTO-RECOVER " +
+                        $"sourceKind={GetSourceKind(candidate.SourcePriority)} " +
+                        $"skill={candidate.SkillId} src={candidate.SourceIndex} dst={targetIndex} " +
+                        $"hp={hpBefore}->{target.hp}/{target.maxhp} " +
+                        $"effect={candidate.Effect} projectedCost={candidate.ProjectedCost} " +
+                        $"cost={candidate.Cost} mp={mpBefore}->{candidate.Source.mp}");
+
+                    ScheduleNextAction();
+                    return;
                 }
 
                 // HP recovery is complete (or currently impossible). Continue
@@ -329,6 +293,124 @@ namespace NocturneModernController
             }
 
             return (source.flag & 0x2u) == 0 ? 0 : 1;
+        }
+
+        private static RecoveryCandidate? FindBestHpRecoveryCandidate(
+            Il2Cppdds3GlobalWork_H.dds3GlobalWork_t global,
+            Il2Cppnewdata_H.datUnitWork_t target,
+            int missingHp)
+        {
+            var stocklist = global.stocklist;
+            var units = global.unitwork;
+            RecoveryCandidate? best = null;
+
+            for (int sourceStockIndex = 0; sourceStockIndex < global.stockcnt; sourceStockIndex++)
+            {
+                int sourceIndex = stocklist[sourceStockIndex];
+                if (sourceIndex < 0 || sourceIndex >= units.Length)
+                {
+                    continue;
+                }
+
+                Il2Cppnewdata_H.datUnitWork_t? source = units[sourceIndex];
+                if (source == null || source.Pointer == IntPtr.Zero || source.hp == 0)
+                {
+                    continue;
+                }
+
+                int sourcePriority = GetSourcePriority(sourceIndex, source);
+                int skillCount = Math.Min(source.skillcnt, source.skill.Length);
+                for (int skillIndex = 0; skillIndex < skillCount; skillIndex++)
+                {
+                    ushort skillId = unchecked((ushort)source.skill[skillIndex]);
+                    try
+                    {
+                        int effect = datCalc.datGetSkillKouka(skillId, 0, source, target);
+                        if (effect <= 0 || cmpMisc.cmpChkSkillCost(skillId, source) == 0)
+                        {
+                            continue;
+                        }
+
+                        int cost = Math.Max(0, cmpDrawSkill.cmpGetSkillCost(skillId, source));
+                        int casts = Math.Max(1, (missingHp + effect - 1) / effect);
+                        int projectedCost = checked(cost * casts);
+                        int projectedOverheal = checked((effect * casts) - missingHp);
+                        RecoveryCandidate current = new RecoveryCandidate(
+                            source,
+                            sourceIndex,
+                            sourcePriority,
+                            skillId,
+                            effect,
+                            cost,
+                            projectedCost,
+                            projectedOverheal);
+
+                        if (best == null || current.IsBetterThan(best))
+                        {
+                            best = current;
+                        }
+                    }
+                    catch (Exception)
+                    {
+                        // Passive and non-camp skills can reject effect inspection.
+                    }
+                }
+            }
+
+            return best;
+        }
+
+        private sealed class RecoveryCandidate
+        {
+            internal RecoveryCandidate(
+                Il2Cppnewdata_H.datUnitWork_t source,
+                int sourceIndex,
+                int sourcePriority,
+                ushort skillId,
+                int effect,
+                int cost,
+                int projectedCost,
+                int projectedOverheal)
+            {
+                Source = source;
+                SourceIndex = sourceIndex;
+                SourcePriority = sourcePriority;
+                SkillId = skillId;
+                Effect = effect;
+                Cost = cost;
+                ProjectedCost = projectedCost;
+                ProjectedOverheal = projectedOverheal;
+            }
+
+            internal Il2Cppnewdata_H.datUnitWork_t Source { get; }
+            internal int SourceIndex { get; }
+            internal int SourcePriority { get; }
+            internal ushort SkillId { get; }
+            internal int Effect { get; }
+            internal int Cost { get; }
+            internal int ProjectedCost { get; }
+            internal int ProjectedOverheal { get; }
+
+            internal bool IsBetterThan(RecoveryCandidate other)
+            {
+                if (SourcePriority != other.SourcePriority)
+                {
+                    return SourcePriority < other.SourcePriority;
+                }
+                if (ProjectedCost != other.ProjectedCost)
+                {
+                    return ProjectedCost < other.ProjectedCost;
+                }
+                if (ProjectedOverheal != other.ProjectedOverheal)
+                {
+                    return ProjectedOverheal < other.ProjectedOverheal;
+                }
+                if (Cost != other.Cost)
+                {
+                    return Cost < other.Cost;
+                }
+                return Effect > other.Effect;
+            }
         }
 
         private static string GetSourceKind(int sourcePriority)
