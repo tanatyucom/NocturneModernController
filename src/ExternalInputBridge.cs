@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Reflection;
+using System.Text.Json;
+using System.Threading;
 using MelonLoader;
 
 namespace NocturneModernController
@@ -12,6 +14,36 @@ namespace NocturneModernController
         private const string MapName = "NocturneModernController_SDL_v2";
         private const int Magic = 0x4E4D4332;
         private const int StopRequested = 0x53544F50;
+
+        // Production architecture: the Helper is never launched by this MOD
+        // DLL directly, and never via explorer.exe. It is launched by an
+        // independent broker process (NocturneModernController.Broker.exe),
+        // itself started by NocturneModernController.Launcher.exe before
+        // Steam launches the game. This keeps Helper's process ancestry
+        // entirely outside smt3hd.exe / Steam's own process tree, which
+        // real-machine testing confirmed is required for the physical
+        // controller (in particular the right stick) to be visible to
+        // Helper at all - see docs/research for the investigation history.
+        //
+        // This class only ever writes a one-shot request file for the
+        // broker to pick up; it never spawns Helper itself and never blocks
+        // waiting for the broker to act, so the game's own startup is never
+        // delayed by this.
+        private static readonly string BrokerReadyMarkerPath = Path.Combine(
+            Path.GetTempPath(),
+            "NocturneModernController.Broker.ready.json");
+
+        private static readonly string BrokerLaunchRequestPath = Path.Combine(
+            Path.GetTempPath(),
+            "NocturneModernController.Broker.LaunchRequest.json");
+
+        // Broker liveness check (docs/research/ROOT-23_HANDOFF_TEMP.md sections
+        // 12/14/15, Root-24/Root-25): BrokerReadyMarkerPath alone cannot be
+        // trusted because the Broker never deletes it on crash or forced
+        // termination. Opening the Broker's own single-instance Mutex is an
+        // OS-guaranteed, immediate, Broker-side-change-free way to confirm the
+        // process behind the marker is actually still alive.
+        private const string BrokerMutexName = "Local\\NocturneModernController.Broker.SingleInstance";
 
         private static MemoryMappedFile? _map;
         private static MemoryMappedViewAccessor? _view;
@@ -33,17 +65,68 @@ namespace NocturneModernController
                 return;
             }
 
-            // Explorer starts the helper outside the Steam game process tree. This is
-            // Launch outside the game process so SDL can enumerate physical
-            // controllers even when Steam Input exposes a virtual device.
-            var startInfo = new ProcessStartInfo("explorer.exe", "\"" + path + "\"")
+            if (!File.Exists(BrokerReadyMarkerPath))
             {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WindowStyle = ProcessWindowStyle.Hidden
-            };
-            Process.Start(startInfo)?.Dispose();
-            logger.Msg("[NocturneModernController] External SDL input helper requested through Explorer.");
+                logger.Warning(
+                    "[NocturneModernController] Independent broker not detected - controller input will not be available this session. " +
+                    "Start the game via NocturneModernController.Launcher.exe (instead of Steam's own Play button) to enable it.");
+                return;
+            }
+
+            if (!IsBrokerAlive(logger))
+            {
+                logger.Warning(
+                    "[NocturneModernController] Broker marker file exists but the broker process is not alive (stale marker from a " +
+                    "crashed or terminated broker) - external right-stick input will not be available this session; other controller " +
+                    "features are unaffected. Restart the broker (e.g. via NocturneModernController.Launcher.exe) to enable it.");
+                return;
+            }
+
+            RequestBrokerLaunch(path, logger);
+        }
+
+        // Confirms the Broker process behind BrokerReadyMarkerPath is actually
+        // alive by opening its existing single-instance Mutex, rather than
+        // trusting the marker file's mere presence (see BrokerMutexName above
+        // for why). The handle is never used to gate anything else and is
+        // always closed here - ownership of the Mutex itself always stays with
+        // the Broker.
+        private static bool IsBrokerAlive(MelonLogger.Instance logger)
+        {
+            Mutex? mutex = null;
+            try
+            {
+                return Mutex.TryOpenExisting(BrokerMutexName, out mutex);
+            }
+            catch (Exception ex)
+            {
+                logger.Warning(
+                    "[NocturneModernController] Broker liveness check failed (" +
+                    ex.GetType().FullName + ": " + ex.Message + "); treating broker as not alive.");
+                return false;
+            }
+            finally
+            {
+                mutex?.Dispose();
+            }
+        }
+
+        // Writes a one-shot request that NocturneModernController.Broker.exe
+        // (already running, confirmed via BrokerReadyMarkerPath above) is
+        // polling for. The broker - not this MOD DLL, not smt3hd.exe - is
+        // what actually calls Process.Start on Helper.exe.
+        private static void RequestBrokerLaunch(string path, MelonLogger.Instance logger)
+        {
+            try
+            {
+                var payload = new { helperPath = path };
+                File.WriteAllText(BrokerLaunchRequestPath, JsonSerializer.Serialize(payload));
+                logger.Msg("[NocturneModernController] Requested broker to launch the SDL input helper.");
+            }
+            catch (Exception ex)
+            {
+                logger.Warning("[NocturneModernController] Failed to write broker launch request: " + ex.Message);
+            }
         }
 
         internal static bool TryRead(out int x, out int y)
