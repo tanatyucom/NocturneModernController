@@ -21,6 +21,9 @@
     <Compile Remove="settings\**\*.cs" />
     <Compile Remove="tools\**\*.cs" />
     <Compile Remove="analysis\**\*.cs" />
+    <!-- Evidence/source snapshots saved under docs/research are read-only copies for
+         investigation history, never build inputs. -->
+    <Compile Remove="docs\**\*.cs" />
     <Compile Remove="src\FieldCameraMainProbe.cs" />
     <Compile Remove="src\RightStickTurnInput.cs" />
     <Compile Remove="src\XInputReader.cs" />
@@ -62,6 +65,15 @@
     </Reference>
     <Reference Include="UnityEngine.InputLegacyModule">
       <HintPath>$(GameDir)\MelonLoader\Il2CppAssemblies\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- Third-party mod, referenced only for a read-only Root26 diagnostic
+         call-count probe (Root26KernelLoopFrequencyProbe). Not required for
+         any core functionality; that probe's Harmony registration is
+         wrapped in try/catch so this mod still loads fine if the
+         third-party DLL is absent/renamed. -->
+    <Reference Include="Nocturne Framerate Mod">
+      <HintPath>$(GameDir)\Mods\Nocturne Framerate Mod.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
