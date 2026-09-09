@@ -64,6 +64,12 @@ internal sealed class FeatureMetadata
     public string Version { get; set; } = string.Empty;
     public string Warning { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
+
+    // Optional multi-value surface (e.g. Chance: Disabled/Native/Always).
+    // Null/empty AllowedValues means this feature renders as the existing
+    // CheckBox (fully backward compatible).
+    public string[]? AllowedValues { get; set; }
+    public string? Value { get; set; }
 }
 
 internal sealed class FeatureProviderMetadata
@@ -80,6 +86,18 @@ internal sealed class FeatureToggleRequest
     public string ProviderId { get; set; } = string.Empty;
     public string FeatureId { get; set; } = string.Empty;
     public bool Enabled { get; set; }
+
+    // Non-null/non-empty means a multi-value selection request (takes
+    // precedence over Enabled on the receiving side).
+    public string? Value { get; set; }
+}
+
+// Wraps one AllowedValues entry for a ComboBox item so the dropdown can
+// show a localized label while the raw wire value (Disabled/Native/
+// Always) round-trips unchanged.
+internal sealed record FeatureValueOption(string RawValue, string Label)
+{
+    public override string ToString() => Label;
 }
 
 internal static class Program
@@ -109,6 +127,7 @@ internal sealed class SettingsForm : Form
     private readonly List<BindingEntry> _bindings;
     private readonly List<FeatureProviderMetadata> _featureProviders;
     private readonly Dictionary<CheckBox, (string ProviderId, string FeatureId, bool Initial)> _featureToggles = new();
+    private readonly Dictionary<ComboBox, (string ProviderId, string FeatureId, string Initial)> _featureValueSelectors = new();
     private readonly ComboBox _mode = NewCombo();
     private readonly ComboBox _horizontalAxis = NewCombo();
     private readonly ComboBox _verticalAxis = NewCombo();
@@ -122,6 +141,8 @@ internal sealed class SettingsForm : Form
     private readonly Dictionary<ControllerButton, Button> _padButtons = new();
     private readonly ToolTip _bindingTips = new ToolTip();
     private readonly ComboBox _uiLanguage = NewCombo();
+    private readonly CheckBox _startupBrokerEnabled = new CheckBox();
+    private bool _startupBrokerInitiallyChecked;
     private readonly bool _japanese;
 
     internal SettingsForm(string settingsPath, string registryPath, string bindingsPath, string featuresPath, string featureRequestsPath, int gamePid)
@@ -153,6 +174,7 @@ internal sealed class SettingsForm : Form
         tabs.TabPages.Add(BuildCameraPage());
         tabs.TabPages.Add(BuildAutoBattlePage());
         tabs.TabPages.Add(BuildFeaturesPage());
+        tabs.TabPages.Add(BuildLaunchPage());
         Controls.Add(tabs);
         Controls.Add(BuildButtons());
 
@@ -265,6 +287,96 @@ internal sealed class SettingsForm : Form
         return page;
     }
 
+    private TabPage BuildLaunchPage()
+    {
+        var page = NewPage(L("起動", "Launch"));
+        string? brokerPath = StartupShortcutManager.ResolveBrokerPath();
+
+        _startupBrokerEnabled.Text = L(
+            "Windowsサインイン時にBrokerを自動起動する(Steam通常プレイで右スティックを使う場合に必要)",
+            "Start the broker automatically at Windows sign-in (needed for the right stick with Steam's own Play button)");
+        _startupBrokerEnabled.AutoSize = true;
+        _startupBrokerEnabled.ForeColor = Color.WhiteSmoke;
+        _startupBrokerEnabled.Location = new Point(30, 30);
+        _startupBrokerEnabled.Enabled = brokerPath != null;
+        _startupBrokerEnabled.Checked = brokerPath != null && StartupShortcutManager.IsRegistered(brokerPath);
+        _startupBrokerInitiallyChecked = _startupBrokerEnabled.Checked;
+        page.Controls.Add(_startupBrokerEnabled);
+
+        page.Controls.Add(new Label
+        {
+            Text = L(
+                "ONにすると、次回以降のWindowsサインイン時にBrokerが自動的に独立起動し、専用Launcherを使わずSteam通常「プレイ」でも" +
+                "右スティックが使えるようになります。\n" +
+                "反映にはWindowsの再起動、またはサインアウト→サインインが必要です。\n" +
+                "OFFにすると、このMODが作成したStartupショートカットのみを削除します(現在動作中のBrokerは停止しません)。",
+                "When enabled, the broker starts automatically at your next Windows sign-in, so the right stick works even with " +
+                "Steam's own Play button - no dedicated Launcher needed.\n" +
+                "Restart Windows, or sign out and back in, for this to take effect.\n" +
+                "Disabling this only removes the Startup shortcut this MOD created; it does not stop a broker that is already running."),
+            Location = new Point(30, 66),
+            Size = new Size(840, 110),
+            ForeColor = Color.Gainsboro
+        });
+
+        if (brokerPath == null)
+        {
+            page.Controls.Add(new Label
+            {
+                Text = L("Broker.exeが見つからないため、この機能は利用できません。",
+                         "Broker.exe was not found, so this feature is unavailable."),
+                Location = new Point(30, 186),
+                AutoSize = true,
+                ForeColor = Color.FromArgb(225, 164, 82)
+            });
+        }
+
+        return page;
+    }
+
+    private void ApplyStartupBrokerChange()
+    {
+        if (_startupBrokerEnabled.Checked == _startupBrokerInitiallyChecked)
+        {
+            return;
+        }
+
+        string? brokerPath = StartupShortcutManager.ResolveBrokerPath();
+        if (brokerPath == null)
+        {
+            return;
+        }
+
+        if (_startupBrokerEnabled.Checked)
+        {
+            if (StartupShortcutManager.TryCreate(brokerPath, out string? error))
+            {
+                MessageBox.Show(
+                    L("Startup登録を作成しました。反映にはWindowsの再起動、またはサインアウト→サインインが必要です。",
+                      "Startup entry created. Restart Windows, or sign out and back in, for this to take effect."),
+                    L("起動", "Launch"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            else
+            {
+                MessageBox.Show(
+                    L("Startup Folderへの書き込みに失敗しました: ", "Failed to write to the Startup folder: ") + error,
+                    L("起動", "Launch"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+        else
+        {
+            if (!StartupShortcutManager.TryRemoveOwned(brokerPath, out bool ownershipMismatch, out string? error))
+            {
+                MessageBox.Show(
+                    ownershipMismatch
+                        ? L("Startup Folder内の同名ショートカットの内容が想定と異なるため、削除を中止しました。エクスプローラーで手動確認してください。",
+                            "The existing shortcut's contents didn't match what this MOD created, so it was not removed. Please check it manually in File Explorer.")
+                        : L("Startupショートカットの削除に失敗しました: ", "Failed to remove the Startup shortcut: ") + error,
+                    L("起動", "Launch"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+    }
+
     private TabPage BuildFeaturesPage()
     {
         var page = NewPage(L("MOD機能", "MOD Features"));
@@ -344,16 +456,39 @@ internal sealed class SettingsForm : Form
             Margin = new Padding(4, 5, 4, 5),
             Padding = new Padding(14)
         };
-        var toggle = new CheckBox
+        if (feature.AllowedValues != null && feature.AllowedValues.Length > 0)
         {
-            Checked = feature.Enabled,
-            Enabled = !feature.ReadOnly,
-            AutoSize = true,
-            Location = new Point(16, 19),
-            ForeColor = Color.WhiteSmoke
-        };
-        _featureToggles[toggle] = (provider.ProviderId, feature.Id, feature.Enabled);
-        card.Controls.Add(toggle);
+            var selector = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Enabled = !feature.ReadOnly,
+                Location = new Point(16, 16),
+                Width = 130
+            };
+            foreach (string rawValue in feature.AllowedValues)
+            {
+                selector.Items.Add(new FeatureValueOption(rawValue, ChanceValueLabel(rawValue, _japanese)));
+            }
+            string initialValue = !string.IsNullOrEmpty(feature.Value) && feature.AllowedValues.Contains(feature.Value)
+                ? feature.Value
+                : feature.AllowedValues[0];
+            selector.SelectedIndex = Array.IndexOf(feature.AllowedValues, initialValue);
+            _featureValueSelectors[selector] = (provider.ProviderId, feature.Id, initialValue);
+            card.Controls.Add(selector);
+        }
+        else
+        {
+            var toggle = new CheckBox
+            {
+                Checked = feature.Enabled,
+                Enabled = !feature.ReadOnly,
+                AutoSize = true,
+                Location = new Point(16, 19),
+                ForeColor = Color.WhiteSmoke
+            };
+            _featureToggles[toggle] = (provider.ProviderId, feature.Id, feature.Enabled);
+            card.Controls.Add(toggle);
+        }
         card.Controls.Add(new Label
         {
             Text = GetFeatureName(provider, feature),
@@ -541,8 +676,18 @@ internal sealed class SettingsForm : Form
                 FeatureId = pair.Value.FeatureId,
                 Enabled = pair.Key.Checked
             })
+            .Concat(_featureValueSelectors
+                .Where(pair => pair.Key.SelectedItem is FeatureValueOption selected &&
+                               selected.RawValue != pair.Value.Initial)
+                .Select(pair => new FeatureToggleRequest
+                {
+                    ProviderId = pair.Value.ProviderId,
+                    FeatureId = pair.Value.FeatureId,
+                    Value = ((FeatureValueOption)pair.Key.SelectedItem!).RawValue
+                }))
             .ToList();
         File.WriteAllText(_featureRequestsPath, JsonSerializer.Serialize(requests, options));
+        ApplyStartupBrokerChange();
         Close();
     }
 
@@ -570,6 +715,19 @@ internal sealed class SettingsForm : Form
         }
         return _actions.FirstOrDefault(action => action.ActionId == actionId)?.DisplayName ?? actionId;
     }
+
+    // Display-label mapping for the current AllowedValues vocabulary
+    // (Disabled/Native/Always). Kept local to the GUI - the wire schema
+    // only carries the raw value, per the integration spec's "display
+    // string separate from internal value" preference, without adding a
+    // third protocol field.
+    private static string ChanceValueLabel(string rawValue, bool japanese) => rawValue switch
+    {
+        "Disabled" => "0%",
+        "Native" => japanese ? "通常" : "Native",
+        "Always" => "100%",
+        _ => rawValue
+    };
 
     private string GetFeatureName(FeatureProviderMetadata provider, FeatureMetadata feature) => feature.Name;
 

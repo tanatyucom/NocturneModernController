@@ -1,0 +1,9 @@
+=== deployed DLL hash ===
+DA68D07637CA797B2726ECD1C53546175FF3FBAE96B927EAFEFC1E03B155E040 */c/Program
+=== build artifact hash ===
+DA68D07637CA797B2726ECD1C53546175FF3FBAE96B927EAFEFC1E03B155E040 *bin/Release/net6.0/NocturneModernController.dll
+
+=== companion binaries (must remain baseline-unchanged) ===
+3ad83f518036491169f080fb1e90bef57b4c17c2287bf04197c81a0c216defe7 *NocturneModernController.Broker.exe
+b596705232eb24c9b64686014a3e0909156b93c97c88821cc4b7d5e1d4ce743e *NocturneModernController.InputHelper.exe
+665b4335c5912673e8a0e3183c5c02820ecdbd88b1f8a9c8cc8c90fc9fd8aa2a *NocturneModernController.Settings.dll

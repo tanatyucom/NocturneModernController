@@ -87,6 +87,14 @@ namespace NocturneModernController
         public string Version { get; set; } = string.Empty;
         public string Warning { get; set; } = string.Empty;
         public string Notes { get; set; } = string.Empty;
+
+        // Optional multi-value surface (e.g. a Chance feature with
+        // Disabled/Native/Always). Null/empty AllowedValues means this
+        // feature is boolean-only (Enabled) - existing providers
+        // (BuiltInFeatureProvider, any external file-based provider that
+        // predates this field) are fully unaffected.
+        public string[]? AllowedValues { get; set; }
+        public string? Value { get; set; }
     }
 
     public sealed class FeatureProviderMetadata
@@ -103,6 +111,10 @@ namespace NocturneModernController
         public string ProviderId { get; set; } = string.Empty;
         public string FeatureId { get; set; } = string.Empty;
         public bool Enabled { get; set; }
+
+        // When non-null/non-empty, this is a multi-value selection request
+        // (takes precedence over Enabled).
+        public string? Value { get; set; }
     }
 
     public interface IModernFeatureProvider
@@ -428,7 +440,9 @@ namespace NocturneModernController
             ReadOnly = feature.ReadOnly,
             Version = feature.Version,
             Warning = feature.Warning,
-            Notes = feature.Notes
+            Notes = feature.Notes,
+            AllowedValues = feature.AllowedValues,
+            Value = feature.Value
         };
 
         private static void EnsureBindingsLoaded()

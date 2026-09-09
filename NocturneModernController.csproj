@@ -28,7 +28,9 @@
     <Compile Remove="src\RightStickTurnInput.cs" />
     <Compile Remove="src\XInputReader.cs" />
     <!-- Investigation-only telemetry retained in source, excluded from releases. -->
-    <Compile Remove="src\NativeMouseVerticalCameraPoc.cs" />
+    <!-- Chapter 118: src\NativeMouseVerticalCameraPoc.cs re-included in the build to
+         re-enable its two dormant, read-only Harmony patches (NativeMouseDragCheckPatch,
+         NativeMouseDirectionPatch) for the Guide-hold camera-speed investigation. -->
     <Compile Remove="src\VerticalCameraStateProbe.cs" />
     <Compile Remove="src\VerticalCameraInjectionPatch.cs" />
     <Compile Remove="src\ForceEncounterTelemetry.cs" />

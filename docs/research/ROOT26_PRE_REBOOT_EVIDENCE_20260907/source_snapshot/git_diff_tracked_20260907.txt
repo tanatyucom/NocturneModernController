@@ -1,0 +1,706 @@
+diff --git a/docs/research/RIGHT_STICK_VIEW_AND_DASH_INVESTIGATION.md b/docs/research/RIGHT_STICK_VIEW_AND_DASH_INVESTIGATION.md
+index 41281aa..8826b0b 100644
+--- a/docs/research/RIGHT_STICK_VIEW_AND_DASH_INVESTIGATION.md
++++ b/docs/research/RIGHT_STICK_VIEW_AND_DASH_INVESTIGATION.md
+@@ -422,7 +422,24 @@ Dash: なし
+ 
+ 録画前に使っていた `FD_Camera_Up/Down` のデジタル注入では、上限がおよそ `+26°`、下限がおよそ `-42°` だった。録画後のネイティブアナログ経路では、およそ `+58°` から `-62°` まで球面移動し、速度も上昇した。`CameraCamLeng` と `CameraFieldView` は変化せず、マウスドラッグ関数も発火していなかった。
+ 
+-したがって、録画機能がカメラ設定を変更したのではなく、録画開始時のフォーカス更新または入力再初期化を契機に、通常は遮断されていたゲーム内蔵の右スティック縦アナログ経路が開通したと判断した。
++### Root26 Evidence修正（2026-09-07）
++
++CONFIRMEDではない事項:
++
++- 「ゲーム起動後、セーブ／ロード画面でControllerをONにすればRight Stickが生きる」という手順は再現が安定せず、生きる場合と死ぬ場合があった。
++- Steam Overlay自体が原因である、という因果関係は現時点ではCONFIRMEDではない。
++
++ユーザー実機観測:
++
++- 上記の不安定さを受けてreWASDを調査した結果、reWASD profile切替とRight Stickの生死に関係がある挙動を確認した。
++- reWASD profile切替時、SMT3HDが「デバイスを切断しました」と表示するケースがあった。
++- Guide長押しからSteamの動画録画操作を行った後はRight Stickが毎回生存し、その後はreWASD profileに関係なくRight Stickが有効だった。
++
++HYPOTHESIS:
++
++Steam Overlay／録画操作に伴うforeground、window message、または入力デバイス再初期化のいずれかが、通常128固定のnative Right Stick channelをanalog-activeへ遷移させる有力な契機である。ただし、どの要素が必要十分条件かはUNRESOLVEDである。
++
++したがって、録画開始時のフォーカス更新または入力再初期化を契機に、通常は遮断されていたゲーム内蔵の右スティック縦アナログ経路が開通した可能性が高い。ただし録画機能やSteam Overlayそのものを原因として確定はしない。
+ 
+ 正式実装ではSDL3対応ゲームパッドから右スティックを取得し、探索中だけ次の値をゲーム標準チャネルへ渡す。
+ 
+diff --git a/helper/Program.cs b/helper/Program.cs
+index 2054f31..fe8ea98 100644
+--- a/helper/Program.cs
++++ b/helper/Program.cs
+@@ -1,4 +1,5 @@
+ using System;
++using System.Collections.Generic;
+ using System.Diagnostics;
+ using System.IO;
+ using System.IO.MemoryMappedFiles;
+@@ -11,13 +12,35 @@ internal static class Program
+     private const int Magic = 0x4E4D4332;
+     private const int StopRequested = 0x53544F50;
+     private const uint InitGamepad = 0x00002000;
+-    private const uint MouseEventMove = 0x0001;
+-    private const int VerticalEngageThreshold = 10000;
+-    private const bool SyntheticVerticalMouseEnabled = false;
+-    private static readonly string LogPath = Path.Combine(
++    private static string LogPath = Path.Combine(
+         Path.GetTempPath(),
+         "NocturneModernController.InputHelper.log");
+ 
++    // SDL3 gamepad axis indices. EMPIRICALLY confirmed (not assumed) against
++    // the shipped SDL3.dll (3.4.14) via SDL_GetGamepadStringForAxis(n):
++    // 0=leftx, 1=lefty, 2=rightx, 3=righty, 4=lefttrigger, 5=righttrigger.
++    private const int AxisLeftX = 0;
++    private const int AxisLeftY = 1;
++    private const int AxisRightX = 2;
++    private const int AxisRightY = 3;
++
++    // SDL3 gamepad buttons monitored for minimal support logging (button
++    // press/release). EMPIRICALLY confirmed against the shipped SDL3.dll via
++    // SDL_GetGamepadStringForButton(n): 0=a,1=b,2=x,3=y,4=back,5=guide,
++    // 6=start,7=leftstick,8=rightstick,9=leftshoulder,10=rightshoulder,
++    // 11=dpup,12=dpdown,13=dpleft,14=dpright. Start/Back/Guide are
++    // intentionally excluded - pressing them can change the game's screen.
++    private static readonly (int Code, string Name)[] MonitoredButtons =
++    {
++        (0, "A"), (1, "B"), (2, "X"), (3, "Y"),
++        (9, "LB"), (10, "RB"),
++        (11, "DpadUp"), (12, "DpadDown"), (13, "DpadLeft"), (14, "DpadRight"),
++        (7, "LeftStickClick"), (8, "RightStickClick")
++    };
++
++    private const int DiagEngageThreshold = 10000;
++    private const int DiagReleaseThreshold = 6000;
++
+     private static int Main(string[] args)
+     {
+         File.WriteAllText(LogPath, $"START {DateTimeOffset.Now:O}{Environment.NewLine}");
+@@ -40,30 +63,87 @@ internal static class Program
+         view.Write(24, 0);
+         view.Write(28, 0);
+         view.Write(32, 0);
+-        int lastMouseTick = 0;
+         bool cursorHidden = false;
+         int trackedGamePid = 0;
++        bool lastForegroundState = false;
++        bool lastCameraContextActiveState = false;
++        bool diagRightXEngaged = false;
++        bool diagRightYEngaged = false;
++        bool diagLeftXEngaged = false;
++        bool diagLeftYEngaged = false;
++        var buttonPressedState = new Dictionary<string, bool>();
++        foreach ((int _, string name) in MonitoredButtons)
++        {
++            buttonPressedState[name] = false;
++        }
+ 
+         try
+         {
+             while (ParentIsAlive(parentPid) && view.ReadInt32(24) != StopRequested)
+             {
+                 SdlNative.SDL_UpdateJoysticks();
++
++                // DIAGNOSTIC ONLY: detect the device going away mid-session so
++                // disconnect/reconnect timing shows up in the log instead of
++                // silently freezing on a stale handle.
++                if (gamepad != IntPtr.Zero && !SdlNative.SDL_GamepadConnected(gamepad))
++                {
++                    Log("DEVICE DISCONNECTED");
++                    SdlNative.SDL_CloseGamepad(gamepad);
++                    gamepad = IntPtr.Zero;
++                    diagRightXEngaged = false;
++                    diagRightYEngaged = false;
++                    diagLeftXEngaged = false;
++                    diagLeftYEngaged = false;
++                    retry = 0;
++                }
++
+                 if (gamepad == IntPtr.Zero && retry-- <= 0)
+                 {
+-                    gamepad = TryOpenValidatedGamepad();
+-                    Log(gamepad == IntPtr.Zero ? "TARGET WAIT" : "TARGET OPEN");
++                    gamepad = TryOpenValidatedGamepad(out int deviceCount);
++                    if (gamepad == IntPtr.Zero)
++                    {
++                        Log("TARGET WAIT");
++                    }
++                    else
++                    {
++                        short openX = SdlNative.SDL_GetGamepadAxis(gamepad, AxisRightX);
++                        short openY = SdlNative.SDL_GetGamepadAxis(gamepad, AxisRightY);
++                        Log($"TARGET OPEN initialAxis x={openX} y={openY}");
++
++                        // Basic device identity, kept for support/troubleshooting.
++                        uint selectedInstanceId = SdlNative.SDL_GetGamepadID(gamepad);
++                        string selectedName = SdlNative.SDL_GetGamepadName(gamepad) ?? "UNAVAILABLE";
++                        string selectedPath = SdlNative.SDL_GetGamepadPath(gamepad) ?? "UNAVAILABLE";
++                        ushort selectedVid = SdlNative.SDL_GetGamepadVendor(gamepad);
++                        ushort selectedPid = SdlNative.SDL_GetGamepadProduct(gamepad);
++                        int selectedType = SdlNative.SDL_GetGamepadType(gamepad);
++                        int connectionState = SdlNative.SDL_GetGamepadConnectionState(gamepad);
++                        ushort productVersion = SdlNative.SDL_GetGamepadProductVersion(gamepad);
++                        string serial = SdlNative.SDL_GetGamepadSerial(gamepad) ?? "UNAVAILABLE";
++                        int playerIndex = SdlNative.SDL_GetGamepadPlayerIndex(gamepad);
++
++                        Log($"DEVICE SELECTED instanceId={selectedInstanceId} name=\"{selectedName}\" " +
++                            $"path=\"{selectedPath}\" vid=0x{selectedVid:X4} pid=0x{selectedPid:X4} " +
++                            $"type={selectedType} deviceCount={deviceCount} connectionState={connectionState} " +
++                            $"productVersion={productVersion} serial=\"{serial}\" playerIndex={playerIndex}");
++                    }
+                     retry = 120;
+                 }
+ 
+                 short x = gamepad == IntPtr.Zero
+                     ? (short)0
+-                    : SdlNative.SDL_GetGamepadAxis(gamepad, 2);
++                    : SdlNative.SDL_GetGamepadAxis(gamepad, AxisRightX);
+                 short y = gamepad == IntPtr.Zero
+                     ? (short)0
+-                    : SdlNative.SDL_GetGamepadAxis(gamepad, 3);
++                    : SdlNative.SDL_GetGamepadAxis(gamepad, AxisRightY);
+ 
+                 int gamePid = view.ReadInt32(32);
++                if (gamePid > 0 && trackedGamePid == 0)
++                {
++                    Log("GAME PID DETECTED pid=" + gamePid);
++                }
++
+                 if (gamePid > 0)
+                 {
+                     trackedGamePid = gamePid;
+@@ -73,22 +153,78 @@ internal static class Program
+                     Log("GAME PROCESS EXIT detected; helper stopping. pid=" + trackedGamePid);
+                     break;
+                 }
++
++                bool gameForegroundNow = gamePid > 0 && IsForegroundProcess(gamePid);
++                if (gameForegroundNow != lastForegroundState)
++                {
++                    Log(gameForegroundNow ? "GAME FOREGROUND" : "GAME BACKGROUND");
++                    lastForegroundState = gameForegroundNow;
++                }
++
+                 bool cameraContextActive = view.ReadInt32(28) != 0 &&
+                     gamePid > 0 &&
+                     IsForegroundProcess(gamePid);
+                 SetCursorHidden(cameraContextActive, ref cursorHidden);
+-                if (SyntheticVerticalMouseEnabled && cameraContextActive &&
+-                    Math.Abs((int)y) >= VerticalEngageThreshold &&
+-                    unchecked(Environment.TickCount - lastMouseTick) >= 4)
++
++                if (cameraContextActive != lastCameraContextActiveState)
+                 {
+-                    lastMouseTick = Environment.TickCount;
+-                    int deltaY = y < 0 ? -4 : 4;
+-                    NativeMethods.mouse_event(
+-                        MouseEventMove,
+-                        0,
+-                        unchecked((uint)deltaY),
+-                        0,
+-                        UIntPtr.Zero);
++                    Log(cameraContextActive ? "CAMERA CONTEXT ACTIVE" : "CAMERA CONTEXT INACTIVE");
++                    lastCameraContextActiveState = cameraContextActive;
++                }
++
++                // Log only on deadzone-crossing/press-release transitions
++                // (not every frame) so a long play session does not produce
++                // excessive log volume.
++                if (gamepad != IntPtr.Zero)
++                {
++                    bool rightXEngagedNow = diagRightXEngaged
++                        ? Math.Abs((int)x) > DiagReleaseThreshold
++                        : Math.Abs((int)x) >= DiagEngageThreshold;
++                    if (rightXEngagedNow != diagRightXEngaged)
++                    {
++                        Log(rightXEngagedNow ? $"AXIS X ENGAGED value={x}" : $"AXIS X NEUTRAL value={x}");
++                        diagRightXEngaged = rightXEngagedNow;
++                    }
++
++                    bool rightYEngagedNow = diagRightYEngaged
++                        ? Math.Abs((int)y) > DiagReleaseThreshold
++                        : Math.Abs((int)y) >= DiagEngageThreshold;
++                    if (rightYEngagedNow != diagRightYEngaged)
++                    {
++                        Log(rightYEngagedNow ? $"AXIS Y ENGAGED value={y}" : $"AXIS Y NEUTRAL value={y}");
++                        diagRightYEngaged = rightYEngagedNow;
++                    }
++
++                    short lx = SdlNative.SDL_GetGamepadAxis(gamepad, AxisLeftX);
++                    short ly = SdlNative.SDL_GetGamepadAxis(gamepad, AxisLeftY);
++
++                    bool leftXEngagedNow = diagLeftXEngaged
++                        ? Math.Abs((int)lx) > DiagReleaseThreshold
++                        : Math.Abs((int)lx) >= DiagEngageThreshold;
++                    if (leftXEngagedNow != diagLeftXEngaged)
++                    {
++                        Log(leftXEngagedNow ? $"LEFTSTICK X ENGAGED value={lx}" : $"LEFTSTICK X NEUTRAL value={lx}");
++                        diagLeftXEngaged = leftXEngagedNow;
++                    }
++
++                    bool leftYEngagedNow = diagLeftYEngaged
++                        ? Math.Abs((int)ly) > DiagReleaseThreshold
++                        : Math.Abs((int)ly) >= DiagEngageThreshold;
++                    if (leftYEngagedNow != diagLeftYEngaged)
++                    {
++                        Log(leftYEngagedNow ? $"LEFTSTICK Y ENGAGED value={ly}" : $"LEFTSTICK Y NEUTRAL value={ly}");
++                        diagLeftYEngaged = leftYEngagedNow;
++                    }
++
++                    foreach ((int code, string name) in MonitoredButtons)
++                    {
++                        bool pressedNow = SdlNative.SDL_GetGamepadButton(gamepad, code);
++                        if (pressedNow != buttonPressedState[name])
++                        {
++                            Log(pressedNow ? $"BUTTON {name} PRESSED" : $"BUTTON {name} RELEASED");
++                            buttonPressedState[name] = pressedNow;
++                        }
++                    }
+                 }
+ 
+                 view.Write(4, gamepad == IntPtr.Zero ? 0 : 1);
+@@ -108,8 +244,8 @@ internal static class Program
+                 SdlNative.SDL_CloseGamepad(gamepad);
+             }
+ 
+-            // SDL_Quit is intentionally omitted because Q2 found that it can
+-            // block indefinitely with reWASD and Steam Input active.
++            // SDL_Quit is intentionally omitted: it can block indefinitely
++            // with reWASD and Steam Input active.
+         }
+         Log("STOP");
+ 
+@@ -168,9 +304,11 @@ internal static class Program
+         }
+     }
+ 
+-    private static IntPtr TryOpenValidatedGamepad()
++    private static IntPtr TryOpenValidatedGamepad(out int deviceCount)
+     {
+         IntPtr ids = SdlNative.SDL_GetJoysticks(out int count);
++        deviceCount = count;
++        Log("ENUMERATION deviceCount=" + count); // DIAGNOSTIC ONLY
+         try
+         {
+             // Prefer a controller that already reports stick activity. This
+@@ -184,7 +322,12 @@ internal static class Program
+                 uint id = unchecked((uint)Marshal.ReadInt32(ids, index * sizeof(uint)));
+                 ushort vendor = SdlNative.SDL_GetJoystickVendorForID(id);
+                 ushort product = SdlNative.SDL_GetJoystickProductForID(id);
+-                Log($"CANDIDATE index={index} id={id} vid=0x{vendor:X4} pid=0x{product:X4} gamepad={SdlNative.SDL_IsGamepad(id)}");
++                // DIAGNOSTIC ONLY: name/path/type help identify which SDL
++                // backend (XInput/RawInput/HIDAPI) actually exposed this device.
++                string candidateName = SdlNative.SDL_GetGamepadNameForID(id) ?? "UNAVAILABLE";
++                string candidatePath = SdlNative.SDL_GetGamepadPathForID(id) ?? "UNAVAILABLE";
++                int candidateType = SdlNative.SDL_GetGamepadTypeForID(id);
++                Log($"CANDIDATE index={index} id={id} name=\"{candidateName}\" path=\"{candidatePath}\" type={candidateType} vid=0x{vendor:X4} pid=0x{product:X4} gamepad={SdlNative.SDL_IsGamepad(id)}");
+                 if (!SdlNative.SDL_IsGamepad(id))
+                 {
+                     continue;
+@@ -196,8 +339,8 @@ internal static class Program
+                     continue;
+                 }
+ 
+-                short x = SdlNative.SDL_GetGamepadAxis(candidate, 2);
+-                short y = SdlNative.SDL_GetGamepadAxis(candidate, 3);
++                short x = SdlNative.SDL_GetGamepadAxis(candidate, AxisRightX);
++                short y = SdlNative.SDL_GetGamepadAxis(candidate, AxisRightY);
+                 if (Math.Abs((int)x) >= 2000 || Math.Abs((int)y) >= 2000)
+                 {
+                     if (fallback != IntPtr.Zero)
+@@ -274,6 +417,61 @@ internal static class Program
+ 
+         [DllImport("SDL3", CallingConvention = CallingConvention.Cdecl)]
+         internal static extern ushort SDL_GetJoystickProductForID(uint instanceId);
++
++        [DllImport("SDL3", CallingConvention = CallingConvention.Cdecl)]
++        [return: MarshalAs(UnmanagedType.LPUTF8Str)]
++        internal static extern string? SDL_GetGamepadNameForID(uint instanceId);
++
++        [DllImport("SDL3", CallingConvention = CallingConvention.Cdecl)]
++        [return: MarshalAs(UnmanagedType.LPUTF8Str)]
++        internal static extern string? SDL_GetGamepadPathForID(uint instanceId);
++
++        [DllImport("SDL3", CallingConvention = CallingConvention.Cdecl)]
++        internal static extern int SDL_GetGamepadTypeForID(uint instanceId);
++
++        [DllImport("SDL3", CallingConvention = CallingConvention.Cdecl)]
++        [return: MarshalAs(UnmanagedType.I1)]
++        internal static extern bool SDL_GamepadConnected(IntPtr gamepad);
++
++        // Button index-to-name mapping verified empirically via
++        // SDL_GetGamepadStringForButton against the shipped SDL3.dll
++        // (3.4.14) (see MonitoredButtons comment above).
++        [DllImport("SDL3", CallingConvention = CallingConvention.Cdecl)]
++        [return: MarshalAs(UnmanagedType.I1)]
++        internal static extern bool SDL_GetGamepadButton(IntPtr gamepad, int button);
++
++        [DllImport("SDL3", CallingConvention = CallingConvention.Cdecl)]
++        internal static extern uint SDL_GetGamepadID(IntPtr gamepad);
++
++        [DllImport("SDL3", CallingConvention = CallingConvention.Cdecl)]
++        [return: MarshalAs(UnmanagedType.LPUTF8Str)]
++        internal static extern string? SDL_GetGamepadName(IntPtr gamepad);
++
++        [DllImport("SDL3", CallingConvention = CallingConvention.Cdecl)]
++        [return: MarshalAs(UnmanagedType.LPUTF8Str)]
++        internal static extern string? SDL_GetGamepadPath(IntPtr gamepad);
++
++        [DllImport("SDL3", CallingConvention = CallingConvention.Cdecl)]
++        internal static extern ushort SDL_GetGamepadVendor(IntPtr gamepad);
++
++        [DllImport("SDL3", CallingConvention = CallingConvention.Cdecl)]
++        internal static extern ushort SDL_GetGamepadProduct(IntPtr gamepad);
++
++        [DllImport("SDL3", CallingConvention = CallingConvention.Cdecl)]
++        internal static extern int SDL_GetGamepadType(IntPtr gamepad);
++
++        [DllImport("SDL3", CallingConvention = CallingConvention.Cdecl)]
++        internal static extern int SDL_GetGamepadConnectionState(IntPtr gamepad);
++
++        [DllImport("SDL3", CallingConvention = CallingConvention.Cdecl)]
++        internal static extern ushort SDL_GetGamepadProductVersion(IntPtr gamepad);
++
++        [DllImport("SDL3", CallingConvention = CallingConvention.Cdecl)]
++        [return: MarshalAs(UnmanagedType.LPUTF8Str)]
++        internal static extern string? SDL_GetGamepadSerial(IntPtr gamepad);
++
++        [DllImport("SDL3", CallingConvention = CallingConvention.Cdecl)]
++        internal static extern int SDL_GetGamepadPlayerIndex(IntPtr gamepad);
+     }
+ 
+     private static class NativeMethods
+@@ -286,14 +484,6 @@ internal static class Program
+             IntPtr window,
+             out uint processId);
+ 
+-        [DllImport("user32.dll")]
+-        internal static extern void mouse_event(
+-            uint flags,
+-            uint dx,
+-            uint dy,
+-            uint data,
+-            UIntPtr extraInfo);
+-
+         [DllImport("user32.dll")]
+         internal static extern int ShowCursor([MarshalAs(UnmanagedType.Bool)] bool show);
+     }
+diff --git a/settings/Program.cs b/settings/Program.cs
+index b77f475..b722b64 100644
+--- a/settings/Program.cs
++++ b/settings/Program.cs
+@@ -64,6 +64,12 @@ internal sealed class FeatureMetadata
+     public string Version { get; set; } = string.Empty;
+     public string Warning { get; set; } = string.Empty;
+     public string Notes { get; set; } = string.Empty;
++
++    // Optional multi-value surface (e.g. Chance: Disabled/Native/Always).
++    // Null/empty AllowedValues means this feature renders as the existing
++    // CheckBox (fully backward compatible).
++    public string[]? AllowedValues { get; set; }
++    public string? Value { get; set; }
+ }
+ 
+ internal sealed class FeatureProviderMetadata
+@@ -80,6 +86,18 @@ internal sealed class FeatureToggleRequest
+     public string ProviderId { get; set; } = string.Empty;
+     public string FeatureId { get; set; } = string.Empty;
+     public bool Enabled { get; set; }
++
++    // Non-null/non-empty means a multi-value selection request (takes
++    // precedence over Enabled on the receiving side).
++    public string? Value { get; set; }
++}
++
++// Wraps one AllowedValues entry for a ComboBox item so the dropdown can
++// show a localized label while the raw wire value (Disabled/Native/
++// Always) round-trips unchanged.
++internal sealed record FeatureValueOption(string RawValue, string Label)
++{
++    public override string ToString() => Label;
+ }
+ 
+ internal static class Program
+@@ -109,6 +127,7 @@ internal sealed class SettingsForm : Form
+     private readonly List<BindingEntry> _bindings;
+     private readonly List<FeatureProviderMetadata> _featureProviders;
+     private readonly Dictionary<CheckBox, (string ProviderId, string FeatureId, bool Initial)> _featureToggles = new();
++    private readonly Dictionary<ComboBox, (string ProviderId, string FeatureId, string Initial)> _featureValueSelectors = new();
+     private readonly ComboBox _mode = NewCombo();
+     private readonly ComboBox _horizontalAxis = NewCombo();
+     private readonly ComboBox _verticalAxis = NewCombo();
+@@ -122,6 +141,8 @@ internal sealed class SettingsForm : Form
+     private readonly Dictionary<ControllerButton, Button> _padButtons = new();
+     private readonly ToolTip _bindingTips = new ToolTip();
+     private readonly ComboBox _uiLanguage = NewCombo();
++    private readonly CheckBox _startupBrokerEnabled = new CheckBox();
++    private bool _startupBrokerInitiallyChecked;
+     private readonly bool _japanese;
+ 
+     internal SettingsForm(string settingsPath, string registryPath, string bindingsPath, string featuresPath, string featureRequestsPath, int gamePid)
+@@ -153,6 +174,7 @@ internal sealed class SettingsForm : Form
+         tabs.TabPages.Add(BuildCameraPage());
+         tabs.TabPages.Add(BuildAutoBattlePage());
+         tabs.TabPages.Add(BuildFeaturesPage());
++        tabs.TabPages.Add(BuildLaunchPage());
+         Controls.Add(tabs);
+         Controls.Add(BuildButtons());
+ 
+@@ -265,6 +287,96 @@ internal sealed class SettingsForm : Form
+         return page;
+     }
+ 
++    private TabPage BuildLaunchPage()
++    {
++        var page = NewPage(L("起動", "Launch"));
++        string? brokerPath = StartupShortcutManager.ResolveBrokerPath();
++
++        _startupBrokerEnabled.Text = L(
++            "Windowsサインイン時にBrokerを自動起動する(Steam通常プレイで右スティックを使う場合に必要)",
++            "Start the broker automatically at Windows sign-in (needed for the right stick with Steam's own Play button)");
++        _startupBrokerEnabled.AutoSize = true;
++        _startupBrokerEnabled.ForeColor = Color.WhiteSmoke;
++        _startupBrokerEnabled.Location = new Point(30, 30);
++        _startupBrokerEnabled.Enabled = brokerPath != null;
++        _startupBrokerEnabled.Checked = brokerPath != null && StartupShortcutManager.IsRegistered(brokerPath);
++        _startupBrokerInitiallyChecked = _startupBrokerEnabled.Checked;
++        page.Controls.Add(_startupBrokerEnabled);
++
++        page.Controls.Add(new Label
++        {
++            Text = L(
++                "ONにすると、次回以降のWindowsサインイン時にBrokerが自動的に独立起動し、専用Launcherを使わずSteam通常「プレイ」でも" +
++                "右スティックが使えるようになります。\n" +
++                "反映にはWindowsの再起動、またはサインアウト→サインインが必要です。\n" +
++                "OFFにすると、このMODが作成したStartupショートカットのみを削除します(現在動作中のBrokerは停止しません)。",
++                "When enabled, the broker starts automatically at your next Windows sign-in, so the right stick works even with " +
++                "Steam's own Play button - no dedicated Launcher needed.\n" +
++                "Restart Windows, or sign out and back in, for this to take effect.\n" +
++                "Disabling this only removes the Startup shortcut this MOD created; it does not stop a broker that is already running."),
++            Location = new Point(30, 66),
++            Size = new Size(840, 110),
++            ForeColor = Color.Gainsboro
++        });
++
++        if (brokerPath == null)
++        {
++            page.Controls.Add(new Label
++            {
++                Text = L("Broker.exeが見つからないため、この機能は利用できません。",
++                         "Broker.exe was not found, so this feature is unavailable."),
++                Location = new Point(30, 186),
++                AutoSize = true,
++                ForeColor = Color.FromArgb(225, 164, 82)
++            });
++        }
++
++        return page;
++    }
++
++    private void ApplyStartupBrokerChange()
++    {
++        if (_startupBrokerEnabled.Checked == _startupBrokerInitiallyChecked)
++        {
++            return;
++        }
++
++        string? brokerPath = StartupShortcutManager.ResolveBrokerPath();
++        if (brokerPath == null)
++        {
++            return;
++        }
++
++        if (_startupBrokerEnabled.Checked)
++        {
++            if (StartupShortcutManager.TryCreate(brokerPath, out string? error))
++            {
++                MessageBox.Show(
++                    L("Startup登録を作成しました。反映にはWindowsの再起動、またはサインアウト→サインインが必要です。",
++                      "Startup entry created. Restart Windows, or sign out and back in, for this to take effect."),
++                    L("起動", "Launch"), MessageBoxButtons.OK, MessageBoxIcon.Information);
++            }
++            else
++            {
++                MessageBox.Show(
++                    L("Startup Folderへの書き込みに失敗しました: ", "Failed to write to the Startup folder: ") + error,
++                    L("起動", "Launch"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
++            }
++        }
++        else
++        {
++            if (!StartupShortcutManager.TryRemoveOwned(brokerPath, out bool ownershipMismatch, out string? error))
++            {
++                MessageBox.Show(
++                    ownershipMismatch
++                        ? L("Startup Folder内の同名ショートカットの内容が想定と異なるため、削除を中止しました。エクスプローラーで手動確認してください。",
++                            "The existing shortcut's contents didn't match what this MOD created, so it was not removed. Please check it manually in File Explorer.")
++                        : L("Startupショートカットの削除に失敗しました: ", "Failed to remove the Startup shortcut: ") + error,
++                    L("起動", "Launch"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
++            }
++        }
++    }
++
+     private TabPage BuildFeaturesPage()
+     {
+         var page = NewPage(L("MOD機能", "MOD Features"));
+@@ -344,16 +456,39 @@ internal sealed class SettingsForm : Form
+             Margin = new Padding(4, 5, 4, 5),
+             Padding = new Padding(14)
+         };
+-        var toggle = new CheckBox
++        if (feature.AllowedValues != null && feature.AllowedValues.Length > 0)
+         {
+-            Checked = feature.Enabled,
+-            Enabled = !feature.ReadOnly,
+-            AutoSize = true,
+-            Location = new Point(16, 19),
+-            ForeColor = Color.WhiteSmoke
+-        };
+-        _featureToggles[toggle] = (provider.ProviderId, feature.Id, feature.Enabled);
+-        card.Controls.Add(toggle);
++            var selector = new ComboBox
++            {
++                DropDownStyle = ComboBoxStyle.DropDownList,
++                Enabled = !feature.ReadOnly,
++                Location = new Point(16, 16),
++                Width = 130
++            };
++            foreach (string rawValue in feature.AllowedValues)
++            {
++                selector.Items.Add(new FeatureValueOption(rawValue, ChanceValueLabel(rawValue, _japanese)));
++            }
++            string initialValue = !string.IsNullOrEmpty(feature.Value) && feature.AllowedValues.Contains(feature.Value)
++                ? feature.Value
++                : feature.AllowedValues[0];
++            selector.SelectedIndex = Array.IndexOf(feature.AllowedValues, initialValue);
++            _featureValueSelectors[selector] = (provider.ProviderId, feature.Id, initialValue);
++            card.Controls.Add(selector);
++        }
++        else
++        {
++            var toggle = new CheckBox
++            {
++                Checked = feature.Enabled,
++                Enabled = !feature.ReadOnly,
++                AutoSize = true,
++                Location = new Point(16, 19),
++                ForeColor = Color.WhiteSmoke
++            };
++            _featureToggles[toggle] = (provider.ProviderId, feature.Id, feature.Enabled);
++            card.Controls.Add(toggle);
++        }
+         card.Controls.Add(new Label
+         {
+             Text = GetFeatureName(provider, feature),
+@@ -541,8 +676,18 @@ internal sealed class SettingsForm : Form
+                 FeatureId = pair.Value.FeatureId,
+                 Enabled = pair.Key.Checked
+             })
++            .Concat(_featureValueSelectors
++                .Where(pair => pair.Key.SelectedItem is FeatureValueOption selected &&
++                               selected.RawValue != pair.Value.Initial)
++                .Select(pair => new FeatureToggleRequest
++                {
++                    ProviderId = pair.Value.ProviderId,
++                    FeatureId = pair.Value.FeatureId,
++                    Value = ((FeatureValueOption)pair.Key.SelectedItem!).RawValue
++                }))
+             .ToList();
+         File.WriteAllText(_featureRequestsPath, JsonSerializer.Serialize(requests, options));
++        ApplyStartupBrokerChange();
+         Close();
+     }
+ 
+@@ -571,6 +716,19 @@ internal sealed class SettingsForm : Form
+         return _actions.FirstOrDefault(action => action.ActionId == actionId)?.DisplayName ?? actionId;
+     }
+ 
++    // Display-label mapping for the current AllowedValues vocabulary
++    // (Disabled/Native/Always). Kept local to the GUI - the wire schema
++    // only carries the raw value, per the integration spec's "display
++    // string separate from internal value" preference, without adding a
++    // third protocol field.
++    private static string ChanceValueLabel(string rawValue, bool japanese) => rawValue switch
++    {
++        "Disabled" => "0%",
++        "Native" => japanese ? "通常" : "Native",
++        "Always" => "100%",
++        _ => rawValue
++    };
++
+     private string GetFeatureName(FeatureProviderMetadata provider, FeatureMetadata feature) => feature.Name;
+ 
+     private string GetFeatureDescription(FeatureProviderMetadata provider, FeatureMetadata feature)
+diff --git a/src/ModMain.cs b/src/ModMain.cs
+index 8941a46..84e3058 100644
+--- a/src/ModMain.cs
++++ b/src/ModMain.cs
+@@ -23,6 +23,7 @@ namespace NocturneModernController
+             HarmonyInstance.CreateClassProcessor(typeof(FormationFlagProbe)).Patch();
+             HarmonyInstance.CreateClassProcessor(typeof(NativeRightStickCameraPatch)).Patch();
+             HarmonyInstance.CreateClassProcessor(typeof(ForceEncounterNativeCheckPatch)).Patch();
++            HarmonyInstance.CreateClassProcessor(typeof(RightStickPollingProbe)).Patch();
+             LoggerInstance.Msg("[NocturneModernController] Dash loaded: hold LT/RT/P; press LT+RT to toggle dash keep.");
+             LoggerInstance.Msg("[NocturneModernController] Native right-stick dungeon camera loaded; legacy LB/RB field turn suppressed, BATTLE untouched.");
+         }
+@@ -37,6 +38,8 @@ namespace NocturneModernController
+                 SmartAutoBattleRuntime.Sample();
+             }
+             bool explorationActive = FieldDashPatch.IsExplorationActive;
++            FocusCycleProbe.Sample();
++            RightStickPollingProbe.Sample();
+             bool modActionsActive = explorationActive && !SettingsGuiController.IsOpen;
+             ExternalInputBridge.UpdateGameContext(modActionsActive);
+             ExplorationCursorController.Update(modActionsActive);
+@@ -55,6 +58,8 @@ namespace NocturneModernController
+ 
+         public override void OnDeinitializeMelon()
+         {
++            RightStickPollingProbe.Shutdown();
++            FocusCycleProbe.Shutdown();
+             SettingsGuiController.Shutdown();
+             SmartAutoBattleRuntime.Shutdown();
+             ExplorationCursorController.Restore();
+diff --git a/src/ModernControllerApi.cs b/src/ModernControllerApi.cs
+index f8d623e..9addfa7 100644
+--- a/src/ModernControllerApi.cs
++++ b/src/ModernControllerApi.cs
+@@ -87,6 +87,14 @@ namespace NocturneModernController
+         public string Version { get; set; } = string.Empty;
+         public string Warning { get; set; } = string.Empty;
+         public string Notes { get; set; } = string.Empty;
++
++        // Optional multi-value surface (e.g. a Chance feature with
++        // Disabled/Native/Always). Null/empty AllowedValues means this
++        // feature is boolean-only (Enabled) - existing providers
++        // (BuiltInFeatureProvider, any external file-based provider that
++        // predates this field) are fully unaffected.
++        public string[]? AllowedValues { get; set; }
++        public string? Value { get; set; }
+     }
+ 
+     public sealed class FeatureProviderMetadata
+@@ -103,6 +111,10 @@ namespace NocturneModernController
+         public string ProviderId { get; set; } = string.Empty;
+         public string FeatureId { get; set; } = string.Empty;
+         public bool Enabled { get; set; }
++
++        // When non-null/non-empty, this is a multi-value selection request
++        // (takes precedence over Enabled).
++        public string? Value { get; set; }
+     }
+ 
+     public interface IModernFeatureProvider
+@@ -428,7 +440,9 @@ namespace NocturneModernController
+             ReadOnly = feature.ReadOnly,
+             Version = feature.Version,
+             Warning = feature.Warning,
+-            Notes = feature.Notes
++            Notes = feature.Notes,
++            AllowedValues = feature.AllowedValues,
++            Value = feature.Value
+         };
+ 
+         private static void EnsureBindingsLoaded()

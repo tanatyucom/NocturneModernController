@@ -6842,3 +6842,7927 @@ F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
 `Init`/`UpdateConnectedControllers`の手動呼び出し禁止・SendInput
 禁止・Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook
 禁止を継続する。commit/push/stash/reset/revertは行っていない。
+
+## 62. Valve/Steam Input側APIの静的binding調査、新規probe実装（2026-09-08）
+
+61章でGameAssembly側のindex問題が決着したことを受け、焦点を
+Steam Input側（同一handleへのaction data配信状態）へ移した。
+本章は(A)既存bindingの静的確認と、(B)ユーザー承認後の新規probe
+実装・ビルド・デプロイを扱う。Steamバイナリへのpatch/injection/
+hookは一切行っていない。
+
+### 62.1 `Il2CppSteamworks.SteamInput`の静的binding調査 — CONFIRMED
+
+ECMA-335メタデータを直接読む専用ツール（`System.Reflection.Metadata`
+のみ使用、型のロード・コード実行を一切行わない完全read-only・
+オフライン手法）を作成し、`MelonLoader\Il2CppAssemblies\`配下の
+全71 DLLを走査した。ゲーム本体・Steamクライアントには一切干渉して
+いない。
+
+**CONFIRMED**: `Il2CppSteamworks.SteamInput`（`Assembly-CSharp-
+firstpass.dll`）にbindingされている全メソッドは以下の11個のみ
+（これが全リスト）:
+
+```text
+Boolean Init()
+Boolean Shutdown()
+Int32 GetConnectedControllers(Il2CppStructArray<InputHandle_t> handlesOut)
+InputActionSetHandle_t GetActionSetHandle(String pszActionSetName)
+Void ActivateActionSet(InputHandle_t inputHandle, InputActionSetHandle_t actionSetHandle)
+InputDigitalActionHandle_t GetDigitalActionHandle(String pszActionName)
+InputDigitalActionData_t GetDigitalActionData(InputHandle_t inputHandle, InputDigitalActionHandle_t digitalActionHandle)
+InputAnalogActionHandle_t GetAnalogActionHandle(String pszActionName)
+InputAnalogActionData_t GetAnalogActionData(InputHandle_t inputHandle, InputAnalogActionHandle_t analogActionHandle)
+ESteamInputType GetInputTypeForHandle(InputHandle_t inputHandle)
+InputHandle_t GetControllerForGamepadIndex(Int32 nIndex)
+```
+
+**CONFIRMED（否定的結果）**: `GetCurrentActionSet`・
+`GetAnalogActionOrigins`・`GetActiveActionSetLayers`（および
+"Layer"/"CurrentAction"/"ActionOrigin"を含む同種メソッド名）は、
+メソッド名での横断検索（全71アセンブリ、型名を問わず）でも
+**一件も見つからなかった**。`Il2CppSteamworks.EInputActionOrigin`
+という列挙型自体は存在するが、これを返す・受け取るメソッドは
+どこにも定義されていない。
+
+**訂正（ユーザー指摘、重要）**: この3APIについて「呼び出すには
+Steamバイナリへのpatch相当が必要」と述べたのは言い過ぎだった。
+正確には**「現在の既存managed bindingからは呼び出せない
+（CONFIRMED）。新規interop/bindingを安全に実現する方法自体は
+未調査（UNRESOLVED）」**である。新規bindingの追加とSteam
+バイナリの改変は同義ではなく、将来的にSteamバイナリを変更せず
+安全にnative export/APIへbindingできる可能性は別途検討の余地が
+残る。ただし本調査では現時点でそこへ進む必要はなく、Steam
+バイナリへのpatch/injection/hook禁止は継続する。
+
+### 62.2 `GetControllerForGamepadIndex`の追加 — ユーザー指摘
+
+一覧に含まれる`InputHandle_t GetControllerForGamepadIndex(Int32
+nIndex)`も、read-only・副作用なしの単純ゲッターであることが
+確認できた。これにより、「Steam Input論理handle」と
+「XInput/gamepadスロットindex」の対応関係がDEAD→Guide→LIVEで
+変化するかどうかを追加で観測できる。
+
+### 62.3 `Root26InputTypeAndGamepadIndexProbe`実装（`src/Root26InputTypeAndGamepadIndexProbe.cs`）
+
+- **完全read-only**: `SteamInput.GetInputTypeForHandle(InputHandle_t)`
+  と`SteamInput.GetControllerForGamepadIndex(int)`のみを呼ぶ。
+  いずれもValve公式のSteamworks.NET単純ゲッターで、既存の
+  `Root26Phase2AnalogActionDataProbe`が同じ`SteamInput`静的クラス
+  経由で`GetAnalogActionData`を既に読み取り専用で呼んでいるのと
+  同じ設計方針。
+- **A. `GetInputTypeForHandle`**: 特定のhandle値をコードへ
+  固定せず、`pad.Controller.Keys`（`Root26Phase2
+  AnalogActionDataProbe`と同じ既存managed state）からその
+  セッションで実際に存在するhandleを毎フレーム取得し、各handleに
+  ついて`ESteamInputType`を観測する。
+- **B. `GetControllerForGamepadIndex`**: `nIndex=0..3`について
+  返却される`InputHandle_t`を観測する。
+- 両方ともINITIAL/STATE-CHANGEのみログし、5秒間隔のHEARTBEATを
+  追加。既存probeと同じ`DateTimeOffset.Now:O`形式のタイムスタンプ
+  を使用し、`Root26Phase2AnalogActionDataProbe`・
+  `Root26NativePoll`・`Root26Phase5`（Overlay callback）・
+  `Root26SteamState`（ResetController/ReStart）・
+  `Root26SteamInputUtilFlagProbe`と時系列で直接突き合わせ可能。
+- `ResetController`/`SteamControllerReStart`/`Shutdown`/`Init`/
+  `UpdateConnectedControllers`/`ActivateActionSet`/
+  `ActivateActionSetLayer`の呼び出しは一切なし。F9/F10・SendInput・
+  Guide偽装・Steamバイナリへのpatch/injection/hookもなし。
+- `ModMain.OnUpdate()`から無条件で呼び出す。ビルド前に
+  `Root26Phase4NativeRecoveryPoc`（F10）・
+  `Root26Phase8OverlayToStoreOpenPoc`（Store Overlay自動起動）が
+  引き続きコメントアウトされたまま（無効）であることを再確認済み。
+
+### 62.4 ビルド・デプロイ・ハッシュ確認（CONFIRMED）
+
+```text
+dotnet build NocturneModernController.csproj -c Release -v q
+  → ビルド成功 (0 警告 / 0 エラー)
+
+SHA-256 (source):   479b4cfdae385c40c61889dc7e3a4b72e5122f36a36afa65d3bca471314019a4
+SHA-256 (deployed): 479b4cfdae385c40c61889dc7e3a4b72e5122f36a36afa65d3bca471314019a4
+  → 一致
+
+配置先: C:\Program Files (x86)\Steam\steamapps\common\smt3hd\Mods\NocturneModernController.dll
+```
+
+### 62.5 次の実機テスト手順（ユーザー実施待ち）
+
+1. 通常起動。
+2. 探索状態へ入り、右スティックを意図的に動かしてDEADであることを
+   確認する。
+3. 物理Guideボタン1回を押し、Steam Overlayを閉じる。
+4. 右スティックがLIVE化することを確認する。
+5. ゲームを終了する。
+6. `Latest.log`を提供する。
+
+**判定基準**（ユーザー提示のまま）:
+
+- `GetInputTypeForHandle`が変化 → Steam Input内部のdevice
+  classification自体がDEAD/LIVE間で変化していることがCONFIRMED
+  される（ただしphysical interfaceそのものが切り替わったとまでは
+  断定しない）。
+- 変化なし → device type classification差は原因候補として弱く
+  なる。Steam Input内部のbinding/source/data-delivery差は依然
+  UNRESOLVED。
+- `GetControllerForGamepadIndex`が変化 → Steam Input handleと
+  gamepad/XInput indexのassociation変化がGuide前後で発生している
+  可能性が強くなる。
+- 変化なし → gamepad-index association自体は変化せず、
+  `GetAnalogActionData`の値供給側へさらに問題を限定できる。
+- `GetControllerForGamepadIndex`でhandle対応が判明しても、
+  `045E:0B00`/`045E:028E`のどちらに対応するかは、Steam
+  `controller.txt`等の別Evidenceと直接対応付けできない限り
+  CONFIRMEDとしない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 63. `Root26InputTypeAndGamepadIndexProbe`実機テスト結果: device type/gamepad indexともに不変（2026-09-08 10:07台）
+
+62章で実装したprobeによる実機テストを実施した。「通常起動→
+右スティックを意図的に動かしてDEAD確認→物理Guide 1回→Overlayを
+閉じる→LIVE確認」という手順通りのクリーンなテストになった。
+
+### 63.1 タイムライン — CONFIRMED
+
+```text
+10:07:10.207-208  GamepadIndex[0]=handle 19680159496504676
+                   GamepadIndex[1]=handle 91728467815138660
+                   GamepadIndex[2]=handle 0
+                   GamepadIndex[3]=handle 0
+                   （以降セッション終了まで一度もSTATE-CHANGEなし）
+
+10:07:11.979  InputType[handle=19680159496504676] INITIAL -> k_ESteamInputType_XBoxOneController
+10:07:11.980  InputType[handle=91728467815138660] INITIAL -> k_ESteamInputType_XBox360Controller
+                   （以降セッション終了まで一度もSTATE-CHANGEなし）
+
+10:07:22.457  Overlay ON (m_bActive=1)（物理Guide）
+10:07:23.158  Overlay OFF (m_bActive=0)
+10:07:23.158-160  ResetController() count=1,2 → SteamControllerReStart() count=3,4
+10:07:23.863  [Root26Phase2] controllerHandle=91728467815138660
+              i=1(IG_RSTICK) state=ACTIVE-NONZERO x=-0.254 y=0.003
+              （Resetから約0.70秒後）
+10:07:24.165  [Root26NativePoll] STATE-TRANSITION X/Y -> LIVE
+              （Resetから約1.01秒後）
+10:07:28.835  [Root26NativePoll] STATE-TRANSITION X/Y LIVE -> DEAD
+              （ユーザーがスティックを離した／探索終了）
+
+10:07:20.212（Guide前）と10:07:25.208（Guide後、RSTICK LIVE中）の
+[Root26InputTypeGamepadIndex] HEARTBEATは、InputType・GamepadIndex
+ともに完全に同一内容:
+  InputType:[handle=19680159496504676 type=k_ESteamInputType_XBoxOneController]
+            [handle=91728467815138660 type=k_ESteamInputType_XBox360Controller]
+  GamepadIndex:[index=0 handle=19680159496504676] [index=1 handle=91728467815138660]
+               [index=2 handle=0] [index=3 handle=0]
+```
+
+### 63.2 CONFIRMED（判定基準に基づく）
+
+1. **`GetInputTypeForHandle`はセッション開始（Guideより約10秒前）
+   から終了まで、両handleとも一度も変化しなかった。** ユーザー
+   提示の判定基準に従い、**device type classification差は今回の
+   DEAD→LIVE遷移の原因候補としては弱い**（そもそもGuide前後で
+   何も変化していないため）。Steam Input内部のbinding/source/
+   data-delivery差は依然UNRESOLVEDのまま。
+2. **`GetControllerForGamepadIndex`も同様に、セッションを通じて
+   一度も変化しなかった。** gamepad/XInput indexとhandleの
+   対応関係自体はGuide前後で変化しておらず、**問題は
+   `GetAnalogActionData`の値供給側にさらに限定される**（判定基準
+   の「変化なし」パターンに合致）。
+
+### 63.3 副次的発見（HYPOTHESIS、CONFIRMEDへ格上げしない）
+
+`GetInputTypeForHandle`の値そのものは、2つのhandle間で**恒常的に
+異なっていた**:
+
+```text
+handle 19680159496504676（常にDEAD）  -> k_ESteamInputType_XBoxOneController
+handle 91728467815138660（Guide後にLIVE）-> k_ESteamInputType_XBox360Controller
+```
+
+これはSteamの`controller.txt`（53章・54章）が報告していた2つの
+HIDインターフェース名（`Xbox One Elite 2 Controller`
+[`045E:0B00`] / `Xbox 360 Controller`[`045E:028E`]）と字面上は
+整合する組み合わせに見える。**ただし、ユーザー指定の安全規則に
+従い、この対応（`XBoxOneController`型=`045E:0B00`側、
+`XBox360Controller`型=`045E:028E`側）を`controller.txt`と
+直接突き合わせて確認したわけではないため、CONFIRMEDとはしない。**
+両者が恒常的に異なる分類を持つ2つのhandleである、という事実の
+みCONFIRMEDとし、どちらがどちらの物理インターフェースかは
+HYPOTHESISのまま据え置く。
+
+### 63.4 帰結: Root-26調査の焦点がさらに絞られた — CONFIRMED（表現訂正）
+
+**CONFIRMED（訂正版、より厳密な表現）**: `handle=91728467815138660`
+について、以下がすべて不変のまま:
+
+- controller handle自体（`91728467815138660`固定）
+- `GetInputTypeForHandle` = `k_ESteamInputType_XBox360Controller`固定
+- `GetControllerForGamepadIndex(1)`のassociation（index1↔この
+  handle）固定
+- analog action handle（`IG_RSTICK`用、値`2`）固定
+- `bActive=true`固定
+- `eMode=k_EInputSourceMode_JoystickMove`固定
+
+という状態で、**物理RSTICK操作中の`GetAnalogActionData`が返す
+x/yだけ**が、
+
+```text
+Guide前: x=0, y=0
+Guide後: 実値（例: x=-0.254, y=0.003）
+```
+
+に変化した。これが本節時点でCONFIRMEDと言える事実の全てである。
+
+**訂正（ユーザー指摘、重要）**: 前稿の「physical data delivery
+自体が復旧している」という表現は、Valve内部実装の具体的な意味
+まで踏み込んでおり言い過ぎだった。**「physical data delivery」が
+実際に何を指すか（binding/source selection、HID source
+attachment、action evaluationのいずれか、あるいは複数の組み合わせ
+か）はHYPOTHESISのまま据え置く。** Steam Input内部の
+binding/source/action evaluationのどの層で差が生じているかは
+UNRESOLVEDである。
+
+63.2節の2つの否定的結果（device type不変・gamepad index不変）に
+より、**GameAssembly側のcontroller選択でも、Steam Inputの
+device classificationでも、XInput/gamepad indexのassociationでも
+説明できない**ことはCONFIRMEDだが、真因がSteam Input内部の
+具体的にどの処理層にあるかはUNRESOLVEDのままである。
+
+この時点で、61章までのGameAssembly側の経路（`AnalogStickLRval`/
+`SteamPadSet`/`dds3PadUpdate`/`GetPadAnalog`）を追う意義はほぼ
+尽きている。追加のEvidenceが出ない限り、GameAssembly側の
+controller/index/camera経路はここでCLOSEDとする。残る焦点は、
+**Steam Input（Valve側）が同一handleに対して、なぜ起動直後は
+`GetAnalogActionData`のRSTICK成分を`x=y=0`として返し続け、
+物理Guideボタン経由のOverlay ON/OFF（→`ResetController()`）後
+にのみ実値を返すようになるのか**、という一点である。この経路は
+GameAssembly.dllの外側（`steamclient64.dll`等のSteam client
+内部実装）に属し、本調査で現在read-onlyに観測できる公開APIの
+範囲では、これ以上の直接的な切り分けは難しい可能性が高い。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 64. handle↔物理interface対応の確定、未bound3 APIへの安全なinterop可能性調査（2026-09-08）
+
+GameAssembly側のcontroller/index/camera経路は63章でCLOSEDとした。
+本章はValve側への移行に向けた最後の静的調査2点を扱う。新規
+runtime probe・build/deploy・実機テスト・Steamバイナリへの
+patch/injection/hookは一切行っていない。
+
+### 64.1 Part A: handle↔物理interface対応 — CONFIRMED（字面一致ではなく数値分解による確認）
+
+2つのcontroller handleを16進表記へゼロ拡張し、byte単位で分解した:
+
+```text
+19680159496504676 = 0x0045EB0033E98564
+  byte分解: 00 | 45 EB 00 | 33 E9 85 64
+
+91728467815138660 = 0x0145E28E33E98564
+  byte分解: 01 | 45 E2 8E | 33 E9 85 64
+```
+
+`controller.txt`（53章）が報告している2つのHIDインターフェースの
+識別情報:
+
+```text
+Xbox One Elite 2 Controller: vid=0x045e pid=0x0b00
+  → シリアル文字列 "45e-b00-33e98564"
+Xbox 360 Controller:        vid=0x045e pid=0x028e
+  → シリアル文字列 "45e-28e-33e98564"
+```
+
+**CONFIRMED**: 各handleの中間3byte（`45 EB 00`/`45 E2 8E`）を
+16進文字列として連結すると`45eb00`/`45e28e`となり、これは
+`controller.txt`のVID`45e`とPID`b00`/`28e`をそのまま連結した
+文字列と**完全に一致**する。さらに各handleの末尾4byte
+（`33 E9 85 64`）は、両方とも`controller.txt`のシリアル文字列
+`33e98564`と**完全に一致**する（同一物理ユニットの2
+インターフェースなのでシリアルは共通、これも整合）。先頭1byte
+（`00`/`01`）は識別用の連番と見られる。
+
+これは文字列の見た目の類似ではなく、**handle値そのものを
+数値として分解し、VID・PID・シリアルの各要素がbyte単位で
+厳密に一致することを確認した**、より強い形のCONFIRMEDである。
+
+**確定した対応**:
+
+```text
+handle 19680159496504676（常にDEAD）
+  = Xbox One Elite 2 Controller（VID:PID 045E:0B00、Elite固有HID経路）
+
+handle 91728467815138660（Guide後にLIVE）
+  = Xbox 360 Controller（VID:PID 045E:028E、XInput互換の汎用経路）
+```
+
+**帰結**: ユーザーが提示したモデルは本節によりCONFIRMEDへ格上げ
+できる: **Elite Series 2の二重interfaceのうち、このゲームで
+最終的にRSTICKとして機能するのはXbox 360/XInput互換側
+（`045E:028E`）である。Elite固有の生HID側（`045E:0B00`）は、
+本調査で観測した全セッションを通じて一度もRSTICK実値を
+返していない。**
+
+### 64.2 Part B: 未bound3 APIへの安全なinterop可能性調査 — CONFIRMED（構造的に可能）
+
+ゲームディレクトリに配置されている`steam_api64.dll`
+（`C:\...\smt3hd\steam_api64.dll`、Valve公式の再配布可能SDK
+スタブ。`steamclient64.dll`とは別物で、ゲームが正規に静的/動的
+リンクする対象）のexport tableを、Pythonの`pefile`ライブラリで
+直接読み取った（native PEのexport directoryを読むのみ、
+ロード・実行・patchは一切なし）。
+
+**CONFIRMED**: 全1019 exportのうち、対象3 APIすべてが
+**flat API形式で既に公開されている**:
+
+```text
+SteamAPI_ISteamInput_GetCurrentActionSet
+SteamAPI_ISteamInput_GetAnalogActionOrigins
+SteamAPI_ISteamInput_GetActiveActionSetLayers
+```
+
+（それぞれ`SteamAPI_ISteamController_*`という旧インターフェース名
+の同等exportも並存している。）
+
+さらに、これらのflat関数が要求する「`ISteamInput*`
+インスタンスポインタ」を取得するための正規のバージョン付き
+accessorも存在することを確認した:
+
+```text
+SteamAPI_SteamInput_v002
+SteamAPI_ISteamClient_GetISteamInput
+SteamAPI_Init
+SteamInternal_FindOrCreateUserInterface
+```
+
+**CONFIRMED（安全性の根拠）**: `steam_api64.dll`はゲーム自身が
+既に読み込んでいる公式配布DLLであり、これらのexportを呼ぶことは
+Valveが意図する標準的な使用方法そのものである。`steamclient64.dll`
+や`GameOverlayRenderer64.dll`には一切触れない。`SteamAPI_
+SteamInput_v002()`はすでに初期化済みのインターフェースポインタを
+返すだけの単純なaccessorであり、呼び出し自体に副作用はない
+（ゲーム自身がC++側で`SteamInput()`マクロ経由で内部的に同じ
+関数を呼んでいると推測される、Steamworks SDKの標準パターン）。
+
+**想定される安全な呼び出し経路（構造のみCONFIRMED、精密な
+ABI/シグネチャは未検証）**:
+
+```csharp
+[DllImport("steam_api64.dll", CallingConvention = CallingConvention.Cdecl)]
+private static extern IntPtr SteamAPI_SteamInput_v002();
+
+[DllImport("steam_api64.dll", CallingConvention = CallingConvention.Cdecl)]
+private static extern int SteamAPI_ISteamInput_GetAnalogActionOrigins(
+    IntPtr instancePtr, ulong inputHandle, ulong actionSetHandle,
+    ulong analogActionHandle, /* out */ int[] originsOut);
+```
+
+**UNRESOLVED（実装前に必ず検証すべき点）**:
+1. 各flat関数の正確な引数の型・個数・呼び出し規約（本節で示した
+   シグネチャ案は一般的なSteamworks SDKの記憶に基づく推測であり、
+   このPCにSteamworks SDKヘッダ（`isteaminput.h`/
+   `steam_api_flat.h`）が見つからなかったため、byte単位での
+   確認はできていない）。
+2. `EInputActionOrigin`配列の出力バッファサイズ
+   （`STEAM_INPUT_MAX_ORIGINS`相当の定数値）。
+3. IL2CPP環境下でMelonLoaderのマネージドコードから直接
+   `DllImport("steam_api64.dll")`する際に、既にロード済みの
+   同名モジュールと正しく同一ハンドルに解決されるか（別途
+   読み込まれて二重初期化にならないか）の実機確認。
+4. `SteamAPI_SteamInput_v002`が返すポインタが、IL2CPP側の
+   `Il2CppSteamworks.SteamInput`が内部的に使っているものと
+   同一のインターフェースインスタンスであるかの確認
+   （別インスタンスだった場合、observationの一貫性に影響し得る）。
+
+**結論**: Steamバイナリを一切改変せず、既存の公式`steam_api64.dll`
+のexportへのP/Invokeという形で、`GetAnalogActionOrigins`を含む
+3 APIすべてに安全にread-only interopできる**構造的な経路が
+存在することがCONFIRMED**された。ただし精密なABI検証と実装は
+本章では行っていない。
+
+### 64.3 次の最小read-only runtime probe案（提案のみ、未実装）
+
+`GetAnalogActionOrigins`を最優先とし、以下を観測する新規probeを
+次段の候補とする:
+
+```text
+handle=91728467815138660, actionSetHandle=(現在のActionSet),
+analogActionHandle=(IG_RSTICKのhandle) について
+GetAnalogActionOrigins()の戻り値（origin数・origin配列）を
+DEAD時・Guide開閉中・LIVE時で比較する。
+```
+
+判定価値（ユーザー提示のまま）:
+- Originsが変化 → binding/origin/source-resolution差の強い
+  Evidence。
+- Originsが不変 → 論理originは同一のまま値だけ変化しており、
+  より下位のSteam Input data-delivery/action-evaluation側へ
+  絞り込める。
+
+ただしABI未検証のまま実装すると、誤ったシグネチャでのnative呼び
+出しがクラッシュ等の副作用を招く可能性があるため、**実装前に
+Steamworks SDKヘッダとの照合、または既知の正しいシグネチャ情報の
+入手を推奨する**。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 65. handle↔interface対応の確定表現、flat API ABIの実バイナリ検証（2026-09-08）
+
+64章の結果とユーザー提示のValve公式ドキュメント情報を受け、
+handle↔interface対応の表現を確定し、3 APIのABIを実バイナリの
+逆アセンブルで直接検証した。新規runtime probe実装・build/deploy・
+実機テスト・Git操作・Steamバイナリへのpatch/injection/hookは
+一切行っていない。
+
+### 65.1 handle↔物理interface対応 — CONFIRMED（確定表現）
+
+以降、本調査では以下をCONFIRMEDとして扱う:
+
+```text
+19680159496504676 = 0x0045EB0033E98564
+  = VID 045E / PID 0B00 / serial 33E98564
+  = Xbox One Elite 2 Controller interface（常にDEAD）
+
+91728467815138660 = 0x0145E28E33E98564
+  = VID 045E / PID 028E / serial 33E98564
+  = Xbox 360 / XInput-compatible interface（Guide後にLIVE）
+```
+
+各handleの先頭1byte（`00`/`01`）の意味は**UNRESOLVED/HYPOTHESIS**
+のまま据え置く（連番/スロット識別子の可能性が高いが未確認）。
+
+### 65.2 Valve公式ドキュメントによるsignature確認 — CONFIRMED（ユーザー提供）
+
+ユーザーがValve公式Steamworksドキュメント（`ISteamInput`
+Interface）で確認した公開C++シグネチャを記録する:
+
+```cpp
+InputActionSetHandle_t GetCurrentActionSet(
+    InputHandle_t inputHandle
+);
+
+int GetAnalogActionOrigins(
+    InputHandle_t inputHandle,
+    InputActionSetHandle_t actionSetHandle,
+    InputAnalogActionHandle_t analogActionHandle,
+    EInputActionOrigin *originsOut
+);
+
+int GetActiveActionSetLayers(
+    InputHandle_t inputHandle,
+    InputActionSetHandle_t *handlesOut
+);
+```
+
+`STEAM_INPUT_MAX_ORIGINS = 8`（`originsOut`に必要な要素数）。
+
+### 65.3 flat API ABIの実バイナリ検証 — CONFIRMED（capstoneによる直接逆アセンブル）
+
+Pythonの`capstone`（x86/x64逆アセンブラライブラリ）を用い、
+`steam_api64.dll`の対象flat export関数の実際の命令列を直接
+読み取った（read-only、実行・patchなし）。
+
+**訂正（自己指摘）**: 本節作成の過程で、最初の逆アセンブル
+（固定96byte窓）では対象関数の直後に隣接する**別の無関係な
+exportのthunk**まで読み込んでしまい、そのレジスタ操作コードを
+誤って対象関数自身のものと解釈しかけた。`ret`または`jmp`で
+逆アセンブルを打ち切る形に修正し、正しい関数境界のみを
+再確認した。
+
+**CONFIRMED（正しい命令列）**:
+
+```text
+SteamAPI_SteamInput_v002:
+  sub rsp, 0x28
+  lea rcx, [rip+0x3961d]        ; インターフェースバージョン文字列へのポインタ
+  call <internal resolver>
+  mov rax, [rax]                ; 1回dereference
+  add rsp, 0x28
+  ret
+  → 引数なし、戻り値はRAX（ISteamInput*相当のポインタ）
+
+SteamAPI_ISteamInput_GetCurrentActionSet:
+  mov rax, [rcx]                ; RCX = self、RAXにvtable
+  jmp [rax + 0x30]              ; vtable slot6へtail-call
+  → 単純なvtable-dispatch thunk。RCX以降の引数は一切加工されず
+    そのまま素通りする。
+
+SteamAPI_ISteamInput_GetAnalogActionOrigins:
+  mov r10, [rcx]
+  jmp [r10 + 0x80]              ; vtable slot16へtail-call
+  → 上記と全く同型の単純thunk。
+
+SteamAPI_ISteamInput_GetActiveActionSetLayers:
+  mov rax, [rcx]
+  jmp [rax + 0x50]              ; vtable slot10へtail-call
+  → 同型。
+
+（参考、既存probeが既に使用しているGetConnectedControllersも同型）
+SteamAPI_ISteamInput_GetConnectedControllers:
+  mov rax, [rcx]
+  jmp [rax + 0x18]              ; vtable slot3へtail-call
+```
+
+**CONFIRMED（重要な結論）**: 4関数すべてが**レジスタの並べ替えを
+一切行わない、単純な2命令のvtable-dispatch thunk**であることが
+直接確認できた。これは「`RCX=self`（`ISteamInput*`）、以降の
+引数はx64標準ABIの並び（`RDX`→`R8`→`R9`→スタック）へ
+そのまま素通しする」ことを意味し、Valve公式C++シグネチャに
+「`self`ポインタを先頭へ追加しただけ」がflat API側の引数並びで
+あることが、**逆アセンブルによる直接証拠**として確定した。
+`GetAnalogActionOrigins`の場合:
+
+```text
+RCX = self (ISteamInput*)
+RDX = inputHandle
+R8  = actionSetHandle
+R9  = analogActionHandle
+[stack, 5番目の引数] = originsOut（ポインタ）
+```
+
+という並びがABIレベルでCONFIRMEDされる。
+
+**UNRESOLVED（変更なし）**: `EInputActionOrigin`のnative
+サイズそのもの（4byte int想定）は、Steamworks
+SDKの一般的な規約およびユーザー提供のValve公式ドキュメントに
+基づく前提であり、この特定のvtable先の実装本体
+（`steamclient64.dll`側）を逆アセンブルして直接確認したもの
+ではない（該当箇所はSteam client内部実装であり、本調査の
+read-only境界を超えるため意図的に立ち入っていない）。
+
+### 65.4 v002インターフェースポインタの自己整合性 — CONFIRMED（ABIレベル）
+
+`SteamAPI_SteamInput_v002()`が返す値（`RAX`、1回dereference後の
+生ポインタ）と、`SteamAPI_ISteamInput_*`各flat関数が`RCX`から
+期待する値（`[RCX]`をvtableポインタとして読む、標準MSVC
+C++オブジェクトレイアウト）は、**型として完全に整合する**
+ことをCONFIRMEDした。すなわち「`steam_api64.dll`自身の公開
+accessorが返した`ISteamInput*`を、同DLLのflat APIへそのまま
+渡す」という自己完結した経路は、ABI上矛盾なく成立する。
+（IL2CPP側の`Il2CppSteamworks.SteamInput`が内部的に使っている
+インスタンスと同一かどうかまでは、本節では要求せず、UNRESOLVED
+のまま。）
+
+### 65.5 次の最小probe設計（設計のみ、未実装）
+
+ABI確認がPASSしたため、次の設計を記録する。**本章では実装せず、
+設計のみとする。**
+
+```text
+対象: 既存managed Controller state（pad.Controller.Keys）から
+      得られる全handle（値をコードへ固定しない）。
+      主対象として91728467815138660、比較対象として
+      19680159496504676を想定するが、両方とも動的取得する。
+
+各handleについて毎フレーム:
+  1. currentActionSet = SteamAPI_ISteamInput_GetCurrentActionSet(v002ptr, handle)
+  2. rstickAnalogHandle = 既存managed state
+     （pad.Controller[handle].ActionSets[Current].Analog[1].Handle
+     等、既存Root26Phase2AnalogActionDataProbeと同じ取得経路）
+     から取得（IG_RSTICK固定値2をコードへ埋め込まない）。
+  3. origins[8] = SteamAPI_ISteamInput_GetAnalogActionOrigins(
+       v002ptr, handle, currentActionSet, rstickAnalogHandle, origins buffer)
+     戻り値originCountも記録。
+
+ログ項目: handle, currentActionSet, originCount, origins[]。
+INITIAL/STATE-CHANGEのみ、5秒HEARTBEAT。既存
+Root26Phase2AnalogActionDataProbeのACTIVE-ZERO/ACTIVE-NONZERO、
+Root26NativePollのDEAD/LIVE、Root26Phase5のOverlay callback、
+Root26SteamStateのResetController/ReStartと同一
+DateTimeOffset.Now:O形式で時系列比較可能にする。
+
+DllImport対象は"steam_api64.dll"のみ。steamclient64.dll/
+GameOverlayRenderer64.dllへは一切触れない。
+ResetController/SteamControllerReStart/Shutdown/Init/
+UpdateConnectedControllers/ActivateActionSet/
+ActivateActionSetLayerの呼び出しは行わない。F9/F10・SendInput・
+Guide偽装も行わない。
+```
+
+**判定基準（ユーザー提示のまま、次段実機テスト用に記録）**:
+
+```text
+ActionSetがGuide前後で変化       → action-set switch関与の強いEvidence
+Originsが変化                    → binding/origin/source-resolution差の強いEvidence
+ActionSetもOriginsも完全不変     → logical action configurationは同一のまま
+                                    GetAnalogActionDataの値だけが変化
+                                    → Steam Input内部のさらに下位の
+                                      source/data pathへ絞れる
+                                      （Originsが同じでも「bindingが完全正常」
+                                      とは断定しない）
+```
+
+本章はABI確認・設計までとし、runtime実装・build/deploy・
+実機テスト・Git操作は行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 66. `EInputActionOrigin`サイズ確認、`Root26ActionSetAndOriginsProbe`実装・ビルド・デプロイ（2026-09-08）
+
+65章のABI確認を受け、実装前の最後の確認事項（`EInputActionOrigin`
+のサイズ）をECMA-335メタデータで確認し、その後ユーザー承認のもと
+新規read-only probeを実装した。
+
+### 66.1 `Il2CppSteamworks.EInputActionOrigin`のunderlying type確認 — CONFIRMED
+
+`Assembly-CSharp-firstpass.dll`内の`Il2CppSteamworks.
+EInputActionOrigin`のECMA-335メタデータを直接読み取った
+（型のロード・実行なし、完全read-only）。
+
+```text
+BaseType: System.Enum
+field value__: rawTypeCode=0x08 (ELEMENT_TYPE_I4 = System.Int32)
+```
+
+**CONFIRMED**: managed enum本体の格納型（`value__`フィールド）は
+`System.Int32`（4byte）である。Valve公式C++ APIのenum（Windows上
+既定でint基底、4byte）と合わせて、`originsOut`を**4byte要素×8個**
+として扱う根拠が確定した。
+
+### 66.2 `Root26ActionSetAndOriginsProbe`実装（`src/Root26ActionSetAndOriginsProbe.cs`）
+
+- **使用するnative exportは3つのみ**: `SteamAPI_SteamInput_v002`・
+  `SteamAPI_ISteamInput_GetCurrentActionSet`・
+  `SteamAPI_ISteamInput_GetAnalogActionOrigins`。すべて
+  `DllImport("steam_api64.dll", CallingConvention =
+  CallingConvention.Cdecl)`のみ。`steamclient64.dll`・
+  `GameOverlayRenderer64.dll`は一切呼ばない。
+- **interface pointer**: `SteamAPI_SteamInput_v002()`をセッション中
+  1回だけ解決する。`IntPtr.Zero`ならprobeをセッション全体で無効化し、
+  警告を1回だけ出す（毎フレーム再試行しない）。このpointerが
+  IL2CPP側内部objectと同一であることは前提にしていない。
+- **handle/analog action handle**: 数値を一切固定せず、
+  `pad.Controller.Keys`から存在する全handleを毎フレーム取得し、
+  各handleについて`InputInfo.ActionSets[Current].Analog[1].Handle`
+  （既存`Root26Phase2AnalogActionDataProbe`と同一の取得経路）から
+  RSTICK analog action handleを取得する。
+- **origins buffer安全策**: `STEAM_INPUT_MAX_ORIGINS=8`固定長の
+  `int[8]`を**フィールドとして1回だけ確保**し、毎フレーム
+  `Array.Clear`でゼロ初期化してから再利用する（per-frame allocation
+  なし、リークなし）。戻り値`originCount`が`0`未満または`8`超過の
+  場合は、バッファを読み出さず警告としてログするのみ。
+- **ログ内容**: `handle`・`currentActionSet`・
+  `rstickAnalogHandle`・`origins[0..originCount-1]`の3項目を
+  INITIAL/STATE-CHANGEで個別に記録し、5秒間隔のHEARTBEATを追加。
+  既存probeと同じ`DateTimeOffset.Now:O`形式。
+- `ResetController`/`SteamControllerReStart`/`Shutdown`/`Init`/
+  `UpdateConnectedControllers`/`ActivateActionSet`/
+  `ActivateActionSetLayer`の呼び出しは一切なし。F9/F10・SendInput・
+  Guide偽装・Steamバイナリへのpatch/injection/hookもなし。
+- ビルド前に`Root26Phase4NativeRecoveryPoc`（F10）・
+  `Root26Phase8OverlayToStoreOpenPoc`（Store Overlay自動起動）が
+  引き続き`ModMain.cs`でコメントアウトされたまま（無効）である
+  ことを再確認済み。
+
+### 66.3 ビルド・デプロイ・ハッシュ確認（CONFIRMED）
+
+```text
+dotnet build NocturneModernController.csproj -c Release -v q
+  → ビルド成功 (0 警告 / 0 エラー)
+
+SHA-256 (source):   6101f35863eb435e362d4eadc71b8c48905777411a3214d50877717fa9056769
+SHA-256 (deployed): 6101f35863eb435e362d4eadc71b8c48905777411a3214d50877717fa9056769
+  → 一致
+
+配置先: C:\Program Files (x86)\Steam\steamapps\common\smt3hd\Mods\NocturneModernController.dll
+```
+
+### 66.4 次の実機テスト手順（ユーザー実施待ち）
+
+1. 通常起動。
+2. 探索状態へ入り、右スティックを動かしてDEADであることを確認する。
+3. 物理Guideボタン1回を押し、Steam Overlayを閉じる。
+4. 右スティックがLIVE化することを確認し、少し動かす。
+5. ゲームを終了する。
+6. `Latest.log`を提供する。
+
+**判定基準**（ユーザー提示のまま）:
+
+```text
+CurrentActionSetがGuide前後で変化 → action-set switch関与の強いEvidence
+Originsが変化                     → origin/binding/source-resolution差の強いEvidence
+両方とも完全不変                  → logical action configurationは観測上同一のまま
+                                     GetAnalogActionDataのx/yだけが変化
+                                     → Valve内部のさらに下位のsource/data path
+                                       仮説が強まる（ただしOriginsが同じでも
+                                       「bindingが完全正常」とは断定しない）
+```
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 67. `Root26ActionSetAndOriginsProbe`実機テスト結果: `actionSet=0`の疑義、判定保留（2026-09-08 10:41台）
+
+66章で実装したprobeによる実機テストを実施した。手順通り
+「通常起動→右スティックを動かしてDEAD確認→物理Guide→Overlayを
+閉じる→LIVE確認→少し動かす→終了」のクリーンなテストになった。
+
+### 67.1 タイムライン — CONFIRMED（生の観測値）
+
+```text
+10:41:43.091  SteamAPI_SteamInput_v002() resolved self=0x2B1DFBA0840
+10:41:47.542-543  両handleとも:
+    CurrentActionSet INITIAL -> 0
+    RstickAnalogHandle INITIAL -> 2
+    Origins INITIAL -> count=0 origins=(none)
+    （以降セッション終了まで、この3項目とも一度もSTATE-CHANGEなし）
+
+10:41:59.079  Overlay ON（物理Guide）
+10:41:59.469  Overlay OFF
+10:41:59.469-471  ResetController() count=1,2 → SteamControllerReStart() count=3,4
+10:42:00.137  [Root26Phase2] handle=91728467815138660 RSTICK ACTIVE-NONZERO
+10:42:00.477  [Root26NativePoll] LIVE
+10:42:00.751/05.748  HEARTBEAT: 両handleとも actionSet=0, origins=(none) のまま
+              （RSTICK実値が出ている最中も含めて変化なし）
+```
+
+### 67.2 重大な懸念: `actionSet=0`は無効値の可能性がある — UNRESOLVED（判定保留）
+
+**表面的な観測事実（CONFIRMED、生データとして）**: `CurrentActionSet`
+（両handleとも`0`）・`Origins`（両handleとも`count=0`）は、DEAD時・
+Guide開閉中・LIVE時を通じて**一度も変化しなかった**。
+
+**しかし、この結果を66章の判定基準（「両方とも完全不変→Valve内部の
+下位data path仮説が強まる」）にそのまま適用することは、本節時点
+では時期尚早と判断する。** 理由:
+
+`InputActionSetHandle_t`は、`InputHandle_t`（controller handle、
+今回`19680159496504676`/`91728467815138660`という巨大な非ゼロ値）
+と同様、通常は文字列ハッシュ由来の大きな非ゼロ値になる
+（Steamworksのhandle系の一般的な設計）。両handleについて
+`CurrentActionSet`が**リテラルに`0`**（Steamworksの慣習では
+「無効/未設定」を表すことが多い値）を返し続けているのは、
+
+1. 本当にこのinterfaceポインタの視点からは有効なaction setが
+   見えていない、という真正のシグナルである可能性
+2. 65.4節で留保していた懸念（`SteamAPI_SteamInput_v002()`が返す
+   ポインタが、IL2CPP側の`Il2CppSteamworks.SteamInput`が実際に
+   使っている内部インスタンスと**別スコープ**である可能性）が
+   的中し、無効・未初期化に近いinterfaceビューを見ているために
+   `0`が返っている可能性
+
+の両方が考えられ、**本節の観測だけでは区別できない**。
+`Origins`が`count=0`であることも、`actionSetHandle=0`という
+（もし上記2.が真なら）無効な引数を渡した結果として当然0件に
+なっているだけの可能性があり、その場合は
+「binding/originが変化しない」ことの証拠としては**使えない**。
+
+**判定（保留）**: 66.4節の判定基準のうち「両方とも完全不変→
+Valve内部のさらに下位のsource/data path仮説が強まる」は、
+**`actionSet=0`が真正の値であることが別途確認できるまで
+UNRESOLVEDのまま保留する。** 「CurrentActionSet/Originsが
+Guide前後で不変だった」という生の観測事実自体はCONFIRMEDだが、
+その解釈（logical action configurationが本当に同一だったのか、
+単に無効なinterfaceを見ていただけなのか）はUNRESOLVEDである。
+
+### 67.3 次に確認すべきこと（提案のみ、未実装）
+
+`actionSet=0`が真正か無効かを切り分けるため、次のいずれかの
+read-only手段を検討する:
+
+1. 既存bindingの`Il2CppSteamworks.SteamInput.GetActionSetHandle
+   (string)`（62.1節で既にbinding確認済み、read-only）を使い、
+   このゲームが実際に使っている既知のaction set名
+   （例: `docs/research`内で言及されている`"IngameControls"`相当の
+   名称、要調査）を渡した際の戻り値が、何らかの大きな非ゼロ値に
+   なるかを確認する。これにより「非ゼロの妥当なaction set handle
+   とは何か」の基準値が得られる。
+2. `SteamAPI_SteamInput_v002()`が返すポインタと、IL2CPP側
+   `Il2CppSteamworks.SteamInput`が内部的に保持しているポインタが
+   実際に同一かどうかを、何らかのread-only手段で突き合わせる
+   （直接比較する具体的な経路は未検討）。
+3. `GetCurrentActionSet`/`GetAnalogActionOrigins`のP/Invoke
+   宣言・呼び出しコード自体に誤りがないか、再点検する
+   （65章のABI確認は正しかったはずだが、実装時のマーシャリング
+   ミスの可能性をゼロにはできない）。
+
+本節時点では実装・追加テストは行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 68. Action Set名の静的call-site探索（3手法失敗）、`Default`をHYPOTHESISとして採用、`ActionInfo.Handle`発見（2026-09-08）
+
+### 68.1 Action Set名のcall-site直接確認 — 3手法とも失敗
+
+67.3節の提案(1)を実行する前段階として、`GetActionSetHandle`
+に実際に渡される文字列リテラルを`GameAssembly.dll`内で
+call-site（直接の参照元）から静的にCONFIRMEDすることを試みた。
+
+まずicall descriptor文字列
+`"SteamAPI_ISteamInput_GetActionSetHandle\0pszActionSetName\0"`
+を`GameAssembly.dll`内に発見した:
+
+- ファイルオフセット: `0x2c00d3d`
+- RVA: `0x2c0253d`
+- VA: `0x182c0253d`
+
+この文字列のVAへの参照（コード上のRIP相対LEA、またはデータ
+セクション上の絶対ポインタ値）を、以下3種類の独立した
+read-only静的手法で探索したが、**いずれも0件**だった:
+
+1. capstoneによる`.text`セクションのチャンク分割
+   RIP相対LEA走査
+2. capstoneによる`.text`セクション全体の走査
+   （`skipdata=True`設定、8,066,071命令走査、0件）
+3. 全PEセクションに対する生の8バイト絶対ポインタ値走査
+   （リトルエンディアンで`0x182c0253d`と一致するバイト列を
+   直接検索、0件）
+
+**REJECTED（探索手法として）**: この3手法では、この特定の
+icall descriptor文字列への直接参照は見つからなかった。
+これは「call siteが存在しない」ことの証明ではなく、
+「この3手法の探索範囲・精度では見つからなかった」という
+事実に留まる（IL2CPPのicall解決がテーブル経由の間接参照で
+行われている等、他の経路の可能性が残る）。
+
+### 68.2 `Il2Cpp.EActionSets`列挙型の再確認
+
+ECMA-335メタデータ読み取りにより、`Il2Cpp.EActionSets`型
+（`Assembly-CSharp.dll`）のフィールドを再確認した:
+
+```
+Il2Cpp.EActionSets
+  field value__ : Int32
+  field Default : EActionSets
+```
+
+**CONFIRMED**: `EActionSets`の`value__`以外のメンバーは
+`Default`ただ1つのみである。これはゲーム自身のC#コードが
+定義するenumの事実そのものであり、ECMA-335メタデータの
+直接読み取りによる。
+
+**HYPOTHESIS（昇格なし）**: `GetActionSetHandle`へ実際に
+渡される文字列名も`"Default"`である。68.1節の通り、この
+call-site文字列を直接CONFIRMEDする静的証拠は得られていない
+ため、この命題は**CONFIRMEDへ昇格させず、HYPOTHESISのまま
+維持する**。
+
+### 68.3 ユーザー判断: `global-metadata.dat`の追加深掘りは現時点で行わない
+
+3種類の静的参照探索で直接call siteが得られなかった一方、
+`EActionSets`が`Default`ただ1つである点は強いEvidenceである
+ため、これ以上`global-metadata.dat`の文字列リテラルテーブルを
+深掘りするコストに対して得られるものは小さいと判断し、
+**この深掘りは行わない**こととした。
+
+かわりに、次節以降で実装するread-only比較probe自体に
+`"Default"`仮説の検証を兼ねさせる方針とする。すなわち、
+`managed GetActionSetHandle("Default")`と
+`flat GetActionSetHandle("Default")`がともに同一の非ゼロ値を
+返せば、少なくとも`"Default"`がSteam Input側で有効な
+action set名として解決されることがruntimeでCONFIRMEDされる
+（ただしそれが「実際のcall-site文字列と一致する」ことの
+証明ではなく、「有効な名前の一つである」ことの証明である点に
+留意する）。
+
+### 68.4 Phase B: flat `SteamAPI_ISteamInput_GetActionSetHandle`のABI確認
+
+`steam_api64.dll`のexport一覧・capstone逆アセンブルにより
+確認した:
+
+```
+=== SteamAPI_ISteamInput_GetActionSetHandle  RVA=0x1840  VA=0x13B401840 ===
+  mov rax, qword ptr [rcx]
+  jmp qword ptr [rax + 0x20]
+
+=== SteamAPI_ISteamInput_GetAnalogActionHandle  RVA=0x1A00  VA=0x13B401A00 ===
+  mov rax, qword ptr [rcx]
+  jmp qword ptr [rax + 0x70]
+```
+
+**CONFIRMED**: `SteamAPI_ISteamInput_GetActionSetHandle`は
+`steam_api64.dll`のexportとして存在し、64・65章で確認済みの
+他4関数と全く同じ「2命令の単純vtable-dispatch thunk」パターン
+（`mov reg,[rcx]; jmp [reg+off]`、レジスタの並べ替えなし）で
+ある。したがってflat APIのパラメータ順は
+`[self, pszActionSetName]`のままであり、`RCX=self`
+`RDX=pszActionSetName`（`const char*`）という理解で問題ない。
+
+`SteamAPI_ISteamInput_GetAnalogActionHandle`についても同様の
+単純thunkパターンであることを確認した（後続節でRSTICK analog
+action名の比較を試みる場合に備え、あわせて確認）。
+
+### 68.5 `ActionInfo.Handle`（stored ActionSet handle）の発見
+
+ユーザー指示に基づき、既存managed state
+`pad.Controller[handle].ActionSets[Current]`の要素型
+（`SteamPad`のnested type、metadata上は単に`ActionInfo`）が
+ActionSet自身のhandleを保持するfield/propertyを持つかを
+ECMA-335メタデータで確認した:
+
+```
+Il2Cpp.SteamPad
+  prop  Controller : Dictionary`2<UInt64,InputInfo>
+  nested-type InputInfo
+  nested-type ActionInfo
+  ...
+
+(nested) InputInfo
+  prop  Handle : InputHandle_t
+  prop  ControllerType : ESteamInputType
+  prop  Current : Int32
+  prop  ActionSets : List`1<ActionInfo>
+
+(nested) ActionInfo
+  prop  index : Int32
+  prop  Handle : InputActionSetHandle_t
+  prop  Analog : List`1<AnalogAction>
+  prop  Digital : List`1<DigitalAction>
+
+Il2CppSteamworks.InputActionSetHandle_t
+  field m_InputActionSetHandle : UInt64
+```
+
+**CONFIRMED**: `info.ActionSets[info.Current].Handle`
+（`InputActionSetHandle_t`型、実体は`UInt64`の
+`m_InputActionSetHandle`フィールド1個のラッパー構造体）が、
+ゲーム自身が現在保持しているActionSet handleである。
+既存probe（`Root26ActionSetAndOriginsProbe`等）はこのフィールド
+に一度もアクセスしておらず、新規の比較対象として利用可能である。
+
+あわせて、`Il2CppSteamworks.SteamInput`のbindingメソッド一覧を
+再確認し（62章の11メソッドと一致）、`GetActionSetHandle`
+`GetAnalogActionHandle`双方が`(String) -> XxxHandle_t`という
+シグネチャで確かにbindingされていることをECMA-335メタデータで
+再CONFIRMEDした:
+
+```
+SteamInput.GetActionSetHandle(String) -> InputActionSetHandle_t
+SteamInput.GetAnalogActionHandle(String) -> InputAnalogActionHandle_t
+```
+
+### 68.6 次節でのPhase C実装方針（本節では未実装）
+
+以上によりPhase A（名前確認、HYPOTHESISとして採用）・Phase B
+（flat ABI確認、PASS）が完了したため、次節でPhase Cとして
+以下の三者比較read-onlyprobeを実装する:
+
+```
+managedResolved       = SteamInput.GetActionSetHandle("Default")
+flatResolved           = SteamAPI_ISteamInput_GetActionSetHandle(
+                             SteamAPI_SteamInput_v002(), "Default")
+storedActionSetHandle  = pad.Controller[handle]
+                             .ActionSets[Current].Handle
+                             .m_InputActionSetHandle
+```
+
+判定基準（ユーザー指定、そのまま採用）:
+
+```
+managed == flat != 0
+→ managed/flatの名前解決はAPI-visibleに整合
+
+managed == flat == stored != 0
+→ さらに強いEvidence。"Default"がゲームの実ActionSetに対応する
+  こともruntime上CONFIRMEDへ昇格可能
+
+managed == flat != 0 だが storedと不一致
+→ "Default"は有効名だが現在ゲームが使うsetとの対応はUNRESOLVED
+
+managed != flat
+→ flat v002 interfaceのscope/version差を強く疑う
+
+managed == flat == 0
+→ "Default"仮説をCONFIRMEDしない。今回の比較はINCONCLUSIVEとして
+  停止
+```
+
+ただし`managed==flat`のみをもって「同一object pointerである」
+とは断定しない。また`"Default"`が実際のcall-site文字列と
+一致するとも、非ゼロ一致が得られるまでは断定しない。
+
+### 68.7 `Root26ActionSetHandleCompareProbe`実装・ビルド・デプロイ
+
+`src/Root26ActionSetHandleCompareProbe.cs`として実装した。
+
+- P/Invoke対象は`steam_api64.dll`の
+  `SteamAPI_SteamInput_v002`（既存probeと共通の自前解決、
+  ゼロなら以後恒久disable）と
+  `SteamAPI_ISteamInput_GetActionSetHandle`
+  （68.4節でABI確認済みのcdecl thunk、`RCX=self`
+  `RDX=pszActionSetName`、`[MarshalAs(UnmanagedType.LPStr)]`で
+  `const char*`としてマーシャリング）の2つのみ。
+  `ActivateActionSet`等の状態変更APIは一切呼ばない。
+- `managedResolved`/`flatResolved`は`"Default"`という固定名に
+  対する純粋な名前解決であり、フレームごとに変化する理由がない
+  ため、セッション中1回だけ計算・ログ出力する（ONE-SHOT）。
+- `storedActionSetHandle`は`pad.Controller.Keys`から動的に
+  取得した各handleについて、
+  `pad.Controller[handle].ActionSets[info.Current].Handle
+  .m_InputActionSetHandle`をフレームごとに読み取り、
+  `managedResolved`/`flatResolved`との一致可否とあわせて
+  STATE-CHANGE + 5秒HEARTBEATでログする（既存probeと同じ規約）。
+  handle値・action set indexのいずれもハードコードしていない。
+- バッファの動的確保・per-frame allocationは、
+  `StringBuilder`をSample呼び出しごとに1個生成する以外は
+  発生しない（既存の`Root26ActionSetAndOriginsProbe`が
+  `int[8]`を再利用しているのとは異なり、本probeはログ用文字列
+  組み立てが主目的のため、既存probe群の規約の範囲内で許容できる
+  頻度・サイズと判断した）。
+- ログ形式は既存probeと同じ`DateTimeOffset.Now:O`タイムスタンプ
+  を使用し、同一タイムライン上で67章の
+  `Root26ActionSetAndOriginsProbe`の結果と突き合わせ可能にした。
+
+`ModMain.cs`の`OnUpdate()`末尾、既存の
+`Root26ActionSetAndOriginsProbe.Sample();`の直後に
+`Root26ActionSetHandleCompareProbe.Sample();`を追加した。
+`Root26Phase4NativeRecoveryPoc.Sample()`・
+`Root26Phase8OverlayToStoreOpenPoc.Sample()`の2行は
+コメントアウトされたままであることをビルド前に再確認した。
+
+`dotnet build -c Release -v q`は0警告・0エラーで成功した。
+ビルド成果物を
+`C:\Program Files (x86)\Steam\steamapps\common\smt3hd\Mods\
+NocturneModernController.dll`へデプロイし、
+ソース側・デプロイ先のSHA-256が完全一致することを確認した
+（`0ed30421ebed09946e1c47de5f1b44f937be7e88be0ab9cb6da5433c46f88034`）。
+
+本節時点でGit commit/pushは行っていない。次に必要なのは、
+DEAD→Guide→LIVEの実機テストによる`managedResolved`/
+`flatResolved`/`storedActionSetHandle`の値の観測である。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 69. `Root26ActionSetHandleCompareProbe`実機テスト結果: `managed==flat==stored=1`で三者一致、`CurrentActionSet=0`との食い違いが再現（2026-09-08 11:17〜11:18台）
+
+### 69.1 実装バグの発見（先に報告）: STATE-CHANGE誤発火
+
+ログ（`MelonLoader/Latest.log`）を精査した際、
+`Root26ActionSetHandleCompareProbe`のログが約34秒間で
+4087行すべて`STATE-CHANGE`となっており、`HEARTBEAT`が
+1回も出力されていないという不自然な偏りに気づいた。
+
+原因を確認したところ、`SampleStoredHandle()`内の変化検出ロジックが
+バグを含んでいた:
+
+```csharp
+long combined = unchecked((long)handleRaw ^ (long)storedHandle);
+...
+if (!_lastStoredHandle.HasValue || _lastStoredHandle.Value != combined)
+{
+    changed = true;
+}
+_lastStoredHandle = combined;
+```
+
+`_lastStoredHandle`は単一の`long?`フィールドであるにも関わらず、
+`foreach (var handleRaw in pad.Controller.Keys)`のループ内で
+2台分（2つの異なるhandle）について毎回上書きしていた。
+そのため、ループ2周目（2番目のhandle）で保存された`combined`値と、
+次フレームのループ1周目（1番目のhandle）の`combined`値を比較する
+ことになり、`handleRaw`自体が異なるため`combined`も必然的に
+異なり、**実際の値が一切変化していなくても毎フレーム
+`changed=true`と誤判定していた**。
+
+**CONFIRMED（バグとして）**: `Root26ActionSetHandleCompareProbe`の
+STATE-CHANGE/HEARTBEATというログ種別ラベルは、2台以上の
+controllerが存在する状況では意味をなさない（信頼できない）。
+
+**重要な補足**: このバグはログの「種別ラベル（STATE-CHANGE か
+HEARTBEATか）」の判定にのみ影響し、各ログ行に埋め込まれている
+**生の数値（`storedActionSetHandle=...`、`managed==stored=...`
+等）自体の正しさには影響しない**。以下69.2節の判定は、種別
+ラベルではなく生の数値を`grep`等で直接集計した結果に基づく。
+
+### 69.2 生データの集計結果
+
+ログ全体（DEAD相当の起動直後 2026-09-08T11:17:41 から、
+Guide/Overlay起因の`ResetController`呼び出し
+2026-09-08T11:18:01 を挟んで、ログ末尾 2026-09-08T11:18:15 まで、
+約34秒間）から、以下を確認した:
+
+1. `ONE-SHOT`行は設計通り1回のみ記録された:
+   ```
+   ONE-SHOT name="Default" managedResolved=1 flatResolved=1 managed==flat=True
+   ```
+2. `storedActionSetHandle=`の値を全行から抽出し重複排除したところ、
+   **`1`という値1種類のみ**であり、2台のcontroller・全期間を
+   通じて他の値は一度も出現しなかった。
+3. `managed==stored=`の値を全行から抽出し重複排除したところ、
+   **`True`のみ**（`False`は一度も出現しなかった）。
+4. `flat==stored=`についても同様に**`True`のみ**。
+
+すなわち、`managedResolved` / `flatResolved` /
+`storedActionSetHandle`は、DEAD→Guide→ログ末尾までの全区間で
+**完全に`1`のまま一致し続けた**。
+
+### 69.3 同一セッションでの`CurrentActionSet`（67章probe）の再確認
+
+同じログの中で、`Root26ActionSetAndOriginsProbe`
+（66〜67章で実装済み）の`CurrentActionSet`も確認した:
+
+```
+STATE-CHANGE CurrentActionSet[handle=19680159496504676] [INITIAL] -> [0]
+STATE-CHANGE CurrentActionSet[handle=91728467815138660] [INITIAL] -> [0]
+（以降、HEARTBEATも含め全てactionSet=0のまま、11:18:14まで不変）
+```
+
+**CONFIRMED**: 本セッションにおいても、67章と同様に
+`GetCurrentActionSet(handle)`は両handleとも終始`0`のまま
+不変であった（67章の結果が本セッションでも再現した）。
+
+### 69.4 RSTICKの実データによるLIVE化の独立確認
+
+同一セッションの`Root26Phase2AnalogActionDataProbe`（既存probe）
+のログにより、Guide/ResetController呼び出し（11:18:01）の
+直後、11:18:02.557から`handle=91728467815138660 i=1(IG_RSTICK)`
+が`ACTIVE-NONZERO`（`x=-0.0827662 y=0.015625477`等、実際に
+非ゼロの値）に転じ、以降間欠的にNONZERO/ZEROを繰り返す
+挙動を確認した。DEAD区間（11:17:41〜11:18:01）ではRSTICKは
+一度も`ACTIVE-NONZERO`にならなかった。
+
+**CONFIRMED**: 本セッションでも、RSTICKの実データはGuide後に
+初めて非ゼロ値を報告するようになった（DEAD→LIVEの現象自体が
+本セッションでも再現し、69.2/69.3節のprobeと同一タイムライン上
+で相互参照可能である）。
+
+### 69.5 判定
+
+68.6節で提示した判定基準のうち、以下に該当する:
+
+```
+managed == flat == stored != 0
+→ さらに強いEvidence。"Default"がゲームの実ActionSetに対応する
+  こともruntime上CONFIRMEDへ昇格可能
+```
+
+**CONFIRMED**: `managedResolved` (`SteamInput.GetActionSetHandle
+("Default")`) と `flatResolved`
+(`SteamAPI_ISteamInput_GetActionSetHandle(v002self, "Default")`)
+と `storedActionSetHandle`
+(`pad.Controller[handle].ActionSets[Current].Handle
+.m_InputActionSetHandle`、ゲーム自身が保持する値)は、
+DEAD→Guide→LIVE後を通じて三者とも`1`で完全一致した。
+これにより、**`"Default"`という文字列がSteam Input側で
+有効なaction set名として解決され、かつその解決結果
+（handle値`1`）がゲーム自身が現在保持しているActionSet handle
+と一致する**ことがruntime上CONFIRMEDされた。
+
+ただし、以下は依然としてCONFIRMEDされていない、区別すべき
+未解決点である:
+
+- `"Default"`という文字列自体が、GameAssembly.dllの実際の
+  call-site（68.1節）で直接使われているリテラルであることは、
+  依然としてCONFIRMEDされていない（call-site直接参照は
+  見つからないまま）。69.2節の一致は、あくまで
+  「`"Default"`という名前を渡した場合の解決結果が、ゲームが
+  現在保持している値と一致する」ことのCONFIRMEDであり、
+  「`"Default"`という具体的な文字列がその値の“真の名前”である」
+  ことの証明ではない（同じ`1`という値を持つ別の名前が
+  存在する可能性は排除できない）。
+
+**新たな食い違い（HYPOTHESIS、ユーザーが事前に予告していた
+分岐）**: `managed == flat == stored == 1`という
+ActionSet handleの三者一致が、Guide前後を通じて一切変化しない
+一方で、`GetCurrentActionSet(handle)`は同じ全区間で終始`0`の
+ままであり、かつRSTICKの実データ自体はGuide後に非ゼロ値を
+報告するようになる、という3つの事実が同一セッションで同時に
+成立した。
+
+**HYPOTHESIS**: 有効なActionSet handle（`"Default"`=`1`）の
+解決自体は、Guide操作の有無に関わらず常に可能であり、
+`GetCurrentActionSet`が返す`0`という値は、
+「このゲームが`"Default"`アクションセットを全く使っていない」
+ことを意味するのではなく、「`ISteamInput::ActivateActionSet`
+経由の“現在アクティブなactionSet”という概念を、このflat v002
+self（または本probeが呼び出しているスコープ）からは通常の形で
+観測できていない」可能性を示す。すなわち、RSTICKの実データ
+供給（LIVE化）は、`GetCurrentActionSet`が報告する値とは
+**独立した経路**で決まっている可能性がある。この解釈は
+HYPOTHESISであり、`actionSet=0`が引数不正・スコープ不一致・
+その他の理由による無効値である可能性（67.2節で既に指摘済み）を
+排除できていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 70. STATE-CHANGE誤発火バグ修正、`ActivateActionSet`実引数観測probe実装・ビルド・デプロイ（2026-09-08）
+
+### 70.1 第1段階: `Root26ActionSetHandleCompareProbe`のバグ修正
+
+69.1節で発見したバグを修正した。`_lastStoredHandle`
+（単一の`long?`フィールド）を、`Dictionary<ulong, ulong>
+LastStoredHandle`（controller handleごとの前回値を保持）に
+変更した。ループ内で各handleについて
+`LastStoredHandle.TryGetValue(handleRaw, out ulong
+lastForThisHandle)`で自分自身の前回値とのみ比較するようにし、
+他のhandleの値との混同が起きないようにした。
+
+生値比較ロジック（`storedActionSetHandle`の算出、
+`managed==stored`/`flat==stored`の判定）自体は変更していない。
+
+### 70.2 第2段階: `ActivateActionSet`実引数のread-only観測
+
+`src/Root26ActivateActionSetArgsProbe.cs`を新規実装した。
+
+- ECMA-335メタデータにより、`Il2CppSteamworks.SteamInput
+  .ActivateActionSet`の管理コード側パラメータ名が
+  `inputHandle`（`InputHandle_t`）・`actionSetHandle`
+  （`InputActionSetHandle_t`）であることをCONFIRMEDした
+  （Valve公式の`ISteamInput::ActivateActionSet(InputHandle_t,
+  InputActionSetHandle_t)`シグネチャと一致）。
+- 既存の`Root26Phase3ActivateActionSetCallProbe`
+  （`src/Root26Phase3PostResetWatchProbe.cs`内、
+  `[HarmonyPatch(typeof(SteamInput),
+  nameof(SteamInput.ActivateActionSet))]`のPrefix）を拡張し、
+  `Prefix(InputHandle_t inputHandle, InputActionSetHandle_t
+  actionSetHandle)`として引数を受け取り、
+  `Root26ActivateActionSetArgsProbe.LogCall(...)`へ渡すように
+  した。**このPrefixは引数を一切変更せず、`__result`にも
+  触れず、呼び出し自体をスキップ/置換もしない
+  （`return false`は使用していない）** - ゲーム自身が既に
+  決定して呼び出そうとしている引数を観測するだけである。
+- ログ頻度の安全性確認: 69章時点のログ全体を`grep`で確認した
+  ところ、セッション全体で`ActivateActionSetCalls`は最大`4`
+  にしか到達しておらず（毎フレーム発火ではなく、
+  controller接続/再接続イベントに紐づく低頻度呼び出しである
+  ことを裏付ける）、count-onlyではなく呼び出しごとの
+  詳細ログでもflood（大量出力）のリスクがないことを確認した
+  上で実装した。
+- 各呼び出し時、以下をあわせてread-onlyで記録する:
+  `inputHandle`/`actionSetHandle`の生値、
+  `SteamInput.GetInputTypeForHandle(inputHandle)`
+  （62/63章で既にread-only確認済みのgetter）、
+  `SteamInput.GetControllerForGamepadIndex(0..3)`との
+  突き合わせによるgamepad index、そして
+  `pad.Controller[inputHandle].ActionSets[Current].Handle
+  .m_InputActionSetHandle`（Prefix実行時点、すなわち実際の
+  ActivateActionSet呼び出しが完了する**前**の値であることを
+  ログラベル`storedActionSetHandle(pre-call)`で明示）。
+- `ActivateActionSet`/`ActivateActionSetLayer`の手動呼び出しは
+  一切行っていない。本probeはゲーム自身が実際に発行した呼び出し
+  をHarmony Prefixで観測するのみである。
+
+### 70.3 ビルド・デプロイ・ハッシュ確認
+
+`ModMain.cs`の`Root26Phase4NativeRecoveryPoc.Sample()`・
+`Root26Phase8OverlayToStoreOpenPoc.Sample()`の2行がコメント
+アウトされたままであることをビルド前に再確認した。
+
+初回ビルドで`SteamPad pad = util != null ? util.steam_pad :
+null;`によるCS8600警告（nullable参照型: null許容でない型への
+null値の変換）が1件発生したため、`SteamPad? pad = ...`へ修正し、
+0警告0エラーで再ビルドした。
+
+`dotnet build -c Release -v q`は0警告・0エラーで成功した。
+ビルド成果物を
+`C:\Program Files (x86)\Steam\steamapps\common\smt3hd\Mods\
+NocturneModernController.dll`へデプロイし、
+ソース側・デプロイ先のSHA-256が完全一致することを確認した
+（`fa628a82a7d56d4ab9936d5db0f529af6b892225a8959859aac4504b0a6e7229`）。
+
+本節時点でGit commit/pushは行っていない。次に必要なのは、
+起動〜数秒待機（Guide不要、探索状態まで入れば十分）の実機テスト
+による`Root26ActivateActionSetArgsProbe`のCALLログの観測である。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 71. `Root26ActivateActionSetArgsProbe`実機テスト結果: Case A確定 — `ActivateActionSet(handle,1)`が実際に呼ばれても`GetCurrentActionSet(handle)=0`（2026-09-08 11:41台、Guide不要）
+
+### 71.1 テスト条件
+
+ユーザー提案通り、Guideボタンを使わない最小テストを実施した:
+通常起動 → コントローラ認識 → 探索状態まで入る → 数秒待機 →
+終了。ログ全体（11:41:38頃〜11:42:00.858終了）を通じて
+`IG_RSTICK.*ACTIVE-NONZERO`は0件であり（`grep -c`で確認）、
+本セッションではGuide/Overlayを経由したLIVE化は一度も
+発生していないことを確認した（テスト条件通りDEAD区間のみの
+観測であることの裏付け）。
+
+### 71.2 `ActivateActionSet`実引数の観測結果
+
+`Root26ActivateActionSetArgsProbe`のCALLログ（起動直後、
+2026-09-08T11:41:42.421〜.425の約4ミリ秒間に4回）:
+
+```
+CALL count=1 inputHandle=19680159496504676 actionSetHandle=1 inputType=k_ESteamInputType_XBoxOneController gamepadIndex=0
+CALL count=2 inputHandle=19680159496504676 actionSetHandle=1 inputType=k_ESteamInputType_XBoxOneController gamepadIndex=0
+CALL count=3 inputHandle=91728467815138660 actionSetHandle=1 inputType=k_ESteamInputType_XBox360Controller gamepadIndex=1
+CALL count=4 inputHandle=91728467815138660 actionSetHandle=1 inputType=k_ESteamInputType_XBox360Controller gamepadIndex=1
+```
+
+同じログ区間で`SteamControllerReStart()`が`count=1`
+`count=2`の2回、ほぼ同時（11:41:42.425/.432）に呼ばれている
+ことも確認した。4回のActivateActionSet呼び出しは、この
+2回のSteamControllerReStart()（それぞれが2つのcontroller
+handle分を1回ずつActivateする）に対応すると解釈でき、
+69章で確認済みの「セッション全体でActivateActionSetCalls
+は最大4」という観測と数値上も一致する。
+
+**CONFIRMED**: ゲーム自身（本probeが呼び出したのではない、
+Harmony Prefixによる観測のみ）が、実際に
+`ActivateActionSet(inputHandle=19680159496504676,
+actionSetHandle=1)`と
+`ActivateActionSet(inputHandle=91728467815138660,
+actionSetHandle=1)`をそれぞれ呼び出している。
+`actionSetHandle`はどちらの呼び出しでも`1`であり、これは
+68〜69章で確認した「"Default"」候補の
+`managedResolved=flatResolved=storedActionSetHandle=1`と
+同じ値である。
+
+### 71.3 新たな観測: Prefix実行時点で`pad.Controller`にhandleが未登録
+
+`storedActionSetHandle(pre-call)`はいずれの呼び出しでも
+`n/a`となり、ログには以下のエラーが1回記録された
+（`LogErrorOnce`規約により以降は抑制）:
+
+```
+pad.Controller[handle].ActionSets[Current] access threw
+Il2CppInterop.Runtime.Il2CppException:
+System.Collections.Generic.KeyNotFoundException:
+The given key was not present in the dictionary.
+```
+
+**CONFIRMED**: `ActivateActionSet`のPrefix実行時点
+（＝ゲーム自身のネイティブ呼び出しが実際に発火する直前）では、
+`pad.Controller`辞書にまだそのhandleのエントリが存在しない
+瞬間があった。
+
+**HYPOTHESIS**: これは、ゲームが`pad.Controller`への
+登録（`UpdateConnectedControllers`等）よりも前、あるいは
+登録処理の途中でActivateActionSetを呼んでいる可能性を示す。
+本節時点ではこの順序関係自体を独立に検証しておらず、
+`pad.Controller`のpopulateタイミングとActivateActionSet
+呼び出しタイミングの前後関係はUNRESOLVEDのままとする。
+
+### 71.4 `GetCurrentActionSet`との時系列相関
+
+同一セッションの`Root26ActionSetAndOriginsProbe`のログ:
+
+```
+[11:41:42.461] STATE-CHANGE CurrentActionSet[handle=19680159496504676] [INITIAL] -> [0]
+[11:41:42.463] STATE-CHANGE CurrentActionSet[handle=91728467815138660] [INITIAL] -> [0]
+（以降、11:41:55.705までのHEARTBEATも含め、両handleとも
+  actionSet=0のまま一度も変化しなかった）
+```
+
+すなわち、最後の`ActivateActionSet`呼び出し
+（11:41:42.425、count=4）からわずか約36〜38ミリ秒後
+（11:41:42.461/.463）に`GetCurrentActionSet(handle)`が
+初めてポーリングされ、その時点で既に両handleとも`0`を
+返しており、以降ログ末尾（11:41:55.705、テスト終了直前の
+最後のHEARTBEAT）まで一貫して`0`のままだった。
+
+### 71.5 判定: Case A確定
+
+ユーザー提示の判定基準（70章末尾）における**Case A**が
+実機データにより成立した:
+
+```
+ActivateActionSet(196..., 1)
+ActivateActionSet(917..., 1)
+```
+
+が実際にゲーム自身から呼ばれているのに、直後の
+`GetCurrentActionSet(196...) = 0`
+`GetCurrentActionSet(917...) = 0`
+が観測された。
+
+**CONFIRMED**: `GetCurrentActionSet(handle)=0`という結果は、
+単純な「このゲームがそもそもActionSetをactivateしていない
+から0を返している」という説明では**もはや成立しない**。
+`ActivateActionSet`は実際に、しかも`GetCurrentActionSet`が
+最初にポーリングされるわずか数十ミリ秒前に、両handle・
+`actionSetHandle=1`（68〜69章で確認済みの
+`"Default"`候補の値と一致）で呼ばれていることが本セッションで
+直接観測された。
+
+**次に疑うべき対象（ユーザー指示に基づく方針）**: この時点で、
+flat `GetCurrentActionSet`のinterface/version semantics、
+Steam Input側の内部状態、またはこのタイトル特有のAPI挙動を
+次段で検討する。具体的な追加調査の方向性は次節以降で
+ユーザーと合意の上で決定する。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 72. Phase A: flat `GetAnalogActionData`のABI静的確認（2026-09-08）
+
+### 72.1 export確認
+
+`steam_api64.dll`のexport一覧から、`GetAnalogActionData`を
+含む名前を検索した:
+
+```
+SteamAPI_ISteamController_GetAnalogActionData  RVA=0x1AC0
+SteamAPI_ISteamInput_GetAnalogActionData        RVA=0x1AC0
+```
+
+**CONFIRMED**: 両exportは**同一RVA**（同一のマシンコード）を
+指すエイリアスである。
+
+### 72.2 thunkの完全逆アセンブル（ret命令まで正しく境界を切って確認）
+
+65章の自己訂正（disassembly window境界ミス）を踏まえ、
+`ret`命令に到達するまで逐次disassembleした。結果、これは
+単純な2命令vtable-dispatch thunkではなく、構造体戻り値を
+扱う複雑なthunkだった:
+
+```
+0x13b401ac0: push rbx
+0x13b401ac2: sub rsp, 0x30
+0x13b401ac6: mov rax, qword ptr [rdx]        ; rdx = self, vtableロード
+0x13b401ac9: mov r10, rdx                    ; r10 = self 保存
+0x13b401acc: mov rbx, rcx                    ; rbx = 呼び出し元の戻り値バッファ保存
+0x13b401acf: lea rdx, [rsp + 0x20]           ; 新rdx = スタック上の一時戻り値受け皿
+0x13b401ad4: mov rcx, r10                    ; 新rcx = self
+0x13b401ad7: call qword ptr [rax + 0x78]     ; 仮想関数呼び出し（R8/R9は未変更のまま素通り）
+0x13b401ada: movsd xmm0, qword ptr [rax]     ; +0x0..0x7 (8byte) をロード
+0x13b401ade: mov edx, dword ptr [rax + 8]    ; +0x8 (4byte) をロード
+0x13b401ae1: movzx eax, byte ptr [rax + 0xc] ; +0xc (1byte) をロード
+0x13b401ae5: movsd qword ptr [rbx], xmm0     ; 呼び出し元バッファへコピー
+0x13b401ae9: mov dword ptr [rbx + 8], edx
+0x13b401aec: mov byte ptr [rbx + 0xc], al
+0x13b401aef: mov rax, rbx                    ; 戻り値としてバッファポインタを返す
+0x13b401af2: add rsp, 0x30
+0x13b401af6: pop rbx
+0x13b401af7: ret
+```
+
+**CONFIRMED（呼び出し規約）**: `InputAnalogActionData_t`の
+サイズが8バイトを超えるため、Windows x64 ABIの規約通り
+「呼び出し元が確保した戻り値バッファへのポインタ」が暗黙の
+第1引数としてRCXに渡され、以降の引数が1つずつ後ろにシフトする。
+disassembly中、`call [rax+0x78]`の直前までR8・R9への書き込みが
+一切ないため、flat関数呼び出し時点でのR8=inputHandle・
+R9=analogActionHandleがそのまま内部仮想関数へ素通りしている。
+したがって、flat関数`SteamAPI_ISteamInput_GetAnalogActionData`
+の実際のマシンレベル呼び出し規約は:
+
+```
+RCX = 戻り値バッファへのポインタ（呼び出し元がスタック等に確保、
+      hidden・暗黙の第1引数）
+RDX = self
+R8  = inputHandle
+R9  = analogActionHandle
+RAX（戻り値）= 戻り値バッファへのポインタ（RCXと同じ値）
+```
+
+であり、C言語シグネチャとしての引数順は
+`(self, inputHandle, analogActionHandle)`のままである
+（隠しポインタの挿入は呼び出し規約レベルの話であり、.NETの
+P/Invokeマーシャラーは構造体戻り値についてこれを自動的に
+処理するため、C#側の宣言は`(IntPtr self, ulong inputHandle,
+ulong analogActionHandle) -> 構造体`のまま書ける）。
+
+### 72.3 `InputAnalogActionData_t`のネイティブメモリレイアウト — 訂正（Evidence飛躍の撤回）
+
+**本節は当初「ネイティブレイアウトは`x@0x0, y@0x4, eMode@0x8,
+bActive@0xc`の順であるとCONFIRMED」と記載したが、これは
+Evidenceの飛躍であり撤回する。**
+
+72.2節のdisassemblyから直接CONFIRMEDできるのは、以下の
+「バイト単位のコピーサイズとコピー先オフセット」のみである:
+
+```
+offset 0x0..0x7 (8 bytes) を movsd（1命令）で一括コピー
+offset 0x8      (4 bytes) を mov dword でコピー
+offset 0xc      (1 byte)  を mov byte でコピー
+（payload合計13 bytes、ABI上のパディングにより
+  実際の構造体サイズはより大きい可能性がある）
+```
+
+このコピー命令列は「13バイトの構造体を効率よくまとめて
+コピーしているだけ」であり、**各4byteフィールドが意味的に
+何であるか（x/y/eModeのどれか）を一切示していない**。
+たとえばmanaged側の宣言順通り`eMode@0x0, x@0x4, y@0x8,
+bActive@0xc`だったとしても、コンパイラが生成する
+コピー命令列は（8byte一括+4byte+1byte、というパターン自体は）
+**全く同じ形になり得る**。したがって、「`x, y, eMode, bActive`
+という意味的field順序がCONFIRMEDされた」という当初の記述は
+誤りであり、撤回する。
+
+**CONFIRMEDとして残せるのは以下のみ**:
+
+```
+field0: 4 bytes @ offset 0x0
+field1: 4 bytes @ offset 0x4
+field2: 4 bytes @ offset 0x8
+bActiveに対応すると思われる1 byte @ offset 0xc
+payload合計13 bytes（+ ABIパディング）
+```
+
+一方、managed側`Il2CppSteamworks.InputAnalogActionData_t`
+（`Assembly-CSharp-firstpass.dll`、ECMA-335メタデータで確認）の
+フィールド**宣言順**は:
+
+```
+field eMode : EInputSourceMode
+field x     : Single
+field y     : Single
+field bActive : Byte
+```
+
+であることはCONFIRMED済みだが、この宣言順が実際のネイティブ
+offsetの並びと一致するかどうかは、本節時点で**UNRESOLVED**と
+する。次節（72.6）で、この点を憶測なしに解決する別経路を
+試みる。
+
+### 72.4 managed側`GetAnalogActionData`のシグネチャ再確認
+
+ECMA-335メタデータにより再確認した:
+
+```
+SteamInput.GetAnalogActionData(InputHandle_t inputHandle,
+    InputAnalogActionHandle_t analogActionHandle)
+    -> InputAnalogActionData_t
+```
+
+引数名`inputHandle`・`analogActionHandle`は72.2節のflat ABI
+解析結果と一致する。
+
+### 72.5 判定（訂正）: 呼び出し規約はCONFIRMED、field意味順序はUNRESOLVED
+
+以上により、以下がCONFIRMEDされた:
+
+- flat exportの存在（`SteamAPI_ISteamInput_GetAnalogActionData`、
+  RVA 0x1AC0、`SteamAPI_ISteamController_GetAnalogActionData`と
+  エイリアス）
+- thunk全体の完全な逆アセンブル（`ret`到達まで）
+- 呼び出し規約（`self, inputHandle, analogActionHandle`、
+  構造体戻り値はhidden pointer経由、.NET P/Invokeが標準対応する
+  範囲内）
+- ネイティブ構造体の**バイト単位のコピーサイズ・オフセット**
+  （4byte+4byte+4byte+1byte、offset 0x0/0x4/0x8/0xc）
+
+**一方、72.3節で訂正した通り、この4byte×3+1byteという
+コピーパターンの並びだけでは`x/y/eMode`のどれがどのoffsetに
+対応するかという意味的field順序をCONFIRMEDできない。**
+これは依然としてUNRESOLVEDである。
+
+.NET P/Invokeが構造体戻り値のhidden pointer規約を「自動的に
+正しく処理する」という点についても、実際のP/Invoke宣言と
+runtime結果の突き合わせで確認するまでは、必要以上に強く
+CONFIRMED扱いしない。
+
+72.6節で、意味的field順序をCONFIRMEDする別の静的経路
+（IL2CPPランタイム自身が保持するfield offsetテーブルの
+read-only照会）を試みる。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+### 72.6 意味的field順序の静的確認: IL2CPPランタイム自身のfield offsetテーブルを照会する経路の発見
+
+Valve公式SDKヘッダの一般仕様を推測で採用するのではなく、
+**このゲームの実際のビルドでIL2CPPコンパイラが生成した
+field offsetそのもの**を確認できる経路がないか、ローカルに
+存在するファイルを調査した。
+
+`MelonLoader/Dependencies/SupportModules/Il2CppInterop.Runtime.dll`
+をECMA-335メタデータで調査したところ、`IL2CPP`クラス
+（Il2CppInteropランタイムがil2cpp本体の関数を呼び出すための
+薄いラッパー）に、以下のread-only・副作用なしの
+introspection APIが存在することを確認した:
+
+```
+IL2CPP.il2cpp_class_get_field_from_name(IntPtr klass, String name) -> IntPtr
+IL2CPP.il2cpp_field_get_offset(IntPtr field) -> UInt32
+```
+
+また、型ごとのネイティブclassポインタを保持する
+`Il2CppClassPointerStore<T>.NativeClassPtr`（`IntPtr`型の
+静的フィールド）も確認した。
+
+**これらはIL2CPP本体（`GameAssembly.dll`内のil2cpp
+ランタイム）が既に保持している、このゲームの実際のビルドに
+おける真のfield offsetテーブルへの単純な問い合わせであり、
+Steam APIとは無関係、状態変更も一切ない。** Valve公式SDK
+ヘッダの一般仕様を推測で採用するよりも直接的で、67章以前から
+繰り返し確認してきた「`NativeFieldInfoPtr_*`を介した実行時
+offset解決」という既知の仕組みそのものへの問い合わせに
+あたるため、これを使えば
+`Il2CppSteamworks.InputAnalogActionData_t`の`eMode`/`x`/`y`/
+`bActive`各フィールドの実際のnative offsetを、憶測なしに
+ゲーム自身から直接取得できると判断した。
+
+具体的な呼び出し方針:
+
+```csharp
+IntPtr klass = Il2CppClassPointerStore<InputAnalogActionData_t>.NativeClassPtr;
+IntPtr fEMode    = IL2CPP.il2cpp_class_get_field_from_name(klass, "eMode");
+IntPtr fX        = IL2CPP.il2cpp_class_get_field_from_name(klass, "x");
+IntPtr fY        = IL2CPP.il2cpp_class_get_field_from_name(klass, "y");
+IntPtr fBActive  = IL2CPP.il2cpp_class_get_field_from_name(klass, "bActive");
+uint offEMode   = IL2CPP.il2cpp_field_get_offset(fEMode);
+uint offX       = IL2CPP.il2cpp_field_get_offset(fX);
+uint offY       = IL2CPP.il2cpp_field_get_offset(fY);
+uint offBActive = IL2CPP.il2cpp_field_get_offset(fBActive);
+```
+
+本節時点ではこの照会はまだ実装・実行していない。次節で
+一度きりのread-onlyログ出力probeとして実装し、実機で
+offsetの値を直接取得する。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 73. Phase B: `Root26AnalogActionDataCompareProbe`実装・ビルド・デプロイ（2026-09-08）
+
+`src/Root26AnalogActionDataCompareProbe.cs`として実装した。
+
+- P/Invoke対象は`steam_api64.dll`の`SteamAPI_SteamInput_v002`
+  （既存probeと共通の自前解決）と
+  `SteamAPI_ISteamInput_GetAnalogActionData`
+  （72章でABI確認済み）の2つのみ。
+- 72.3節でCONFIRMEDしたネイティブoffset順
+  （`x@0x0, y@0x4, eMode@0x8, bActive@0xc`）通りに
+  `[StructLayout(LayoutKind.Sequential)] struct
+  NativeInputAnalogActionData { float x; float y; int eMode;
+  byte bActive; }`を宣言し、戻り値型として直接使用した
+  （.NETのP/Invokeマーシャラーが構造体戻り値のhidden pointer
+  規約を自動処理するため、C#側で手動のバッファ/ポインタ操作は
+  行っていない）。
+- 各controller handleについて、`pad.Controller.Keys`
+  （ハードコードなし）と
+  `ActionSets[Current].Analog[1]`（既存probeと同じ
+  IG_RSTICKの規約）からRSTICK analog action handleを動的取得し、
+  同一Sample呼び出し内で
+  `managedData = SteamInput.GetAnalogActionData(inputHandle,
+  analogActionHandle)`と
+  `flatData = SteamAPI_ISteamInput_GetAnalogActionData(v002self,
+  inputHandleRaw, analogActionHandleRaw)`の両方を取得し比較する。
+- 比較対象は`bActive`（bool一致）・`eMode`（int一致）・
+  `x`/`y`（値としての一致に加え、
+  `BitConverter.SingleToInt32Bits`によるbit完全一致も別途
+  記録し、値としての一致とbit完全一致を区別できるようにした
+  - 意図的に許容誤差なしの厳密比較としている）。
+- ログはSTATE-CHANGE方式（変化があった時のみ出力）+
+  5秒HEARTBEATとし、既存probeと同じ`DateTimeOffset.Now:O`
+  タイムスタンプ形式を使用した。
+- `ActivateActionSet`等の状態変更APIは一切呼んでいない。
+
+`ModMain.cs`の`Root26ActionSetHandleCompareProbe.Sample();`の
+直後に`Root26AnalogActionDataCompareProbe.Sample();`を追加した。
+`Root26Phase4NativeRecoveryPoc.Sample()`・
+`Root26Phase8OverlayToStoreOpenPoc.Sample()`の2行がコメント
+アウトされたままであることをビルド前に再確認した。
+
+`dotnet build -c Release -v q`は0警告・0エラーで成功した。
+ビルド成果物を
+`C:\Program Files (x86)\Steam\steamapps\common\smt3hd\Mods\
+NocturneModernController.dll`へデプロイし、
+ソース側・デプロイ先のSHA-256が完全一致することを確認した
+（`780c14a731a6f6b6552a79d9756e68d0454e5578ea3dc9363413ca22a5a0b055`）。
+
+本節時点でGit commit/pushは行っていない。次に必要なのは、
+ユーザー提案の実機テスト手順（起動→探索→RSTICKを動かして
+DEAD確認→Guide→Overlayを閉じる→RSTICK LIVE確認→少し動かす→
+終了）による、DEAD区間・LIVE区間それぞれでの
+`managed`/`flat`一致状況（Case P1/P2）の観測である。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 74. Chapter72.3のEvidence飛躍を訂正、field offset照会probe実装、Phase Bをlayout-neutral化・再ビルド・再デプロイ（2026-09-08）
+
+### 74.1 ユーザー指摘の受領と72章の訂正
+
+ユーザーより、72.3節の「ネイティブレイアウトは`x@0, y@4,
+eMode@8, bActive@0xc`とCONFIRMED」という記述がEvidenceの
+飛躍であるとの指摘を受けた。指摘内容: thunkの
+
+```asm
+movsd [0x0..0x7]   ; 8byte一括コピー
+mov dword [0x8]    ; 4byteコピー
+mov byte [0xc]     ; 1byteコピー
+```
+
+というコピー命令列は、単に13byteの構造体を効率よくコピー
+しているだけであり、`eMode, x, y`のうちどれがどのoffsetに
+対応するかという**意味的field順序**を一切示していない。
+`eMode@0x0, x@0x4, y@0x8`という別の並びでも、コンパイラが
+生成するコピー命令列の「8+4+1byte」というパターン自体は
+同じになり得る。
+
+この指摘は正しいと判断し、72.3節・72.5節を訂正した
+（該当箇所を参照。撤回した記述を削除するのではなく、
+「訂正」であることを明示した上で、実際にCONFIRMEDできる
+範囲（バイト単位のコピーサイズ・オフセットのみ）まで
+記述を後退させた）。
+
+### 74.2 意味的field順序を憶測なしで確認する新経路の発見: IL2CPPランタイム自身のfield offsetテーブル照会
+
+Valve公式SDKヘッダの一般仕様を推測で採用するのではなく、
+このゲームの実際のビルドでIL2CPPが生成したfield offsetを
+直接確認する経路を探索した。ローカルの
+`MelonLoader/Dependencies/SupportModules/
+Il2CppInterop.Runtime.dll`（本プロジェクトが既に参照済みの
+アセンブリ）をECMA-335メタデータで調査し、以下のread-only
+introspection APIを発見した（`Il2CppInterop.Runtime`
+名前空間）:
+
+```
+IL2CPP.il2cpp_class_get_field_from_name(IntPtr klass, string name) -> IntPtr
+IL2CPP.il2cpp_field_get_offset(IntPtr field) -> UInt32
+Il2CppClassPointerStore<T>.NativeClassPtr : IntPtr
+```
+
+これらはil2cppランタイム（`GameAssembly.dll`内）が既に
+保持している、このゲームの実際のビルドにおける真のfield
+offsetテーブルへの単純な問い合わせであり、**Steam APIとは
+完全に無関係、状態変更も一切ない**。詳細は72.6節に記録済み。
+
+### 74.3 `Root26AnalogDataFieldOffsetProbe`実装
+
+`src/Root26AnalogDataFieldOffsetProbe.cs`として実装した。
+セッション中1回だけ、`Il2CppSteamworks.InputAnalogActionData_t`
+の`eMode`/`x`/`y`/`bActive`各フィールドについて
+`il2cpp_class_get_field_from_name`→`il2cpp_field_get_offset`
+を呼び出し、`FIELD-OFFSET name="..." offset=...`という形式で
+ログ出力する。副作用のないread-onlyのメタデータ照会のみで、
+Steam Input状態には一切触れない。
+
+### 74.4 `Root26AnalogActionDataCompareProbe`のlayout-neutral化
+
+ユーザー指示に基づき、Phase Bのprobeを「意味付きstruct」から
+「layout非依存の生word比較」へ再設計した。
+
+- flat側の戻り値構造体を、72.2節でCONFIRMED済みの
+  バイトサイズ・オフセット（4+4+4+1byte @ 0x0/0x4/0x8/0xc）
+  のみに基づく、意味を持たない生の構造体
+  `RawInputAnalogActionData { uint raw0; uint raw1; uint raw2;
+  byte raw3; }`として受け取るよう変更した（フィールド順序に
+  関する仮定は一切含まない）。
+- 各`raw0`/`raw1`/`raw2`について、`Int32`としての値と
+  `BitConverter.Int32BitsToSingle`によるbit再解釈の
+  `Single`値の両方をログする。
+- managed側の`eMode`（int化）・`x`/`y`
+  （`BitConverter.SingleToInt32Bits`によるbit表現）・
+  `bActive`と、`raw0`/`raw1`/`raw2`/`raw3`の**全組み合わせ**
+  についてbit一致フラグ（`raw0==eMode`、`raw0==xBits`、
+  `raw0==yBits`、`raw1==eMode`等、9通り+`raw3==bActive`）を
+  算出しログに含めた。これにより、どの生wordがmanaged側の
+  どのフィールドに対応するかを、事前の仮定なしに実機ログから
+  直接判定できるようにした（特にRSTICKを実際に動かし、
+  x/yが明確に異なる非ゼロ値を取る瞬間の一致パターンから
+  判定するのが最も確実である）。
+- `ModMain.cs`に`Root26AnalogDataFieldOffsetProbe.Sample();`を
+  `Root26ActionSetHandleCompareProbe.Sample();`の直後、
+  `Root26AnalogActionDataCompareProbe.Sample();`の直前に追加した。
+
+### 74.5 ビルド・デプロイ・ハッシュ確認
+
+`ModMain.cs`の`Root26Phase4NativeRecoveryPoc.Sample()`・
+`Root26Phase8OverlayToStoreOpenPoc.Sample()`の2行がコメント
+アウトされたままであることをビルド前に再確認した。
+
+`dotnet build -c Release -v q`は0警告・0エラーで成功した。
+ビルド成果物を
+`C:\Program Files (x86)\Steam\steamapps\common\smt3hd\Mods\
+NocturneModernController.dll`へデプロイし、
+ソース側・デプロイ先のSHA-256が完全一致することを確認した
+（`2c3114a8f5a11e2e3a208bebafa09e673e23253e9b17095fabc4431eb7b30364`）。
+
+本節時点でGit commit/pushは行っていない。次に必要なのは、
+ユーザー提案の実機テスト手順（起動→探索→RSTICKを動かして
+DEAD確認→Guide→Overlayを閉じる→RSTICK LIVE確認→少し動かす→
+終了）による、`Root26AnalogDataFieldOffsetProbe`の
+`FIELD-OFFSET`ログ（意味的field順序の直接確認）と、
+`Root26AnalogActionDataCompareProbe`のSTATE-CHANGE/HEARTBEAT
+ログ（layout-neutralなmanaged/flat一致状況）の両方の観測である。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 75. 実機テスト結果: field offsetはmanaged宣言順と整合、しかし`GetAnalogActionData`はflat側が終始ゼロ固定（Case P2、新たな技術的疑い）（2026-09-08 12:26〜12:27台）
+
+### 75.1 `Root26AnalogDataFieldOffsetProbe`の結果
+
+IL2CPPランタイム自身のfield offsetテーブル照会結果:
+
+```
+FIELD-OFFSET name="eMode"   offset=16
+FIELD-OFFSET name="x"       offset=20
+FIELD-OFFSET name="y"       offset=24
+FIELD-OFFSET name="bActive" offset=28
+```
+
+**CONFIRMED**: いずれも4byte間隔で、先頭のoffset（16）を基準
+とした相対配置は`eMode@+0x0, x@+0x4, y@+0x8, bActive@+0xc`
+となる。絶対offsetが16から始まっているのは、これがmanaged側の
+boxed representationとしてのoffset（IL2CPPのobjectヘッダー分の
+オフセットを含む）であるためと考えられる（HYPOTHESIS）。
+
+**CONFIRMED（相対配置）**: managed側のフィールド**宣言順**
+（`eMode, x, y, bActive`、72.4節で既にCONFIRMED済み）と、
+IL2CPPランタイムが実際に割り当てたfield offsetの相対的な
+並び順は**一致する**。
+
+72.2節のthunk観測（8byte一括コピー→4byteコピー→1byteコピー）
+とも整合する:「8byte一括コピー」は隣接する`eMode`
+（offset+0x0、4byte）と`x`（offset+0x4、4byte）を
+`movsd`一命令でまとめてコピーしたものと解釈でき、続く
+「4byteコピー」が`y`（offset+0x8）、「1byteコピー」が
+`bActive`（offset+0xc）に対応する、という解釈と矛盾しない。
+
+**HYPOTHESIS（断定しない）**: managed側のこの相対配置が、
+flat native側の実際の構造体レイアウトとも一致するという
+前提には依存している（IL2CPP interopはnative ABIと一致する
+よう値型をレイアウトするのが設計上の原則だが、これ自体は
+本節の照会だけでは独立に証明されていない）。
+
+### 75.2 `Root26AnalogActionDataCompareProbe`の結果: flat側が終始ゼロ固定
+
+DEAD区間（起動直後）:
+
+```
+managed(eMode=6 x=0 y=0 bActive=True)
+flatRaw(raw0=0x00000000 raw1=0x00000000 raw2=0x00000000 raw3=0)
+match(... raw3==bActive:False ...)
+```
+
+Guide後、RSTICKを実際に動かした区間（12:26:52台、
+managed x/yが明確に非ゼロへ変動、例:
+`x=-0.95489365 y=0.29691458`）:
+
+```
+managed(eMode=6 x=-0.95489365 y=0.29691458 bActive=True)
+flatRaw(raw0=0x00000000 raw1=0x00000000 raw2=0x00000000 raw3=0)
+match(raw0==eMode:False raw0==xBits:False raw0==yBits:False
+      raw1==eMode:False raw1==xBits:False raw1==yBits:False
+      raw2==eMode:False raw2==xBits:False raw2==yBits:False
+      raw3==bActive:False)
+```
+
+**CONFIRMED**: セッション全体（12:26:15〜12:27:03、DEAD区間・
+RSTICKを実際に動かしたLIVE区間の両方を含む、STATE-CHANGE
+148件）を通じて、`raw0`/`raw1`/`raw2`/`raw3`は**一度も
+0以外の値を記録しなかった**（`grep`による全件確認）。
+managed側は`x`/`y`が明確に変動し`bActive`もTrue/Falseの
+両方を記録しているにも関わらず、flat側は完全に無反応だった。
+
+`Root26AnalogDataCompareProbe`から警告・例外ログは一切
+出力されておらず（`LogErrorOnce`は発火していない）、
+`SteamAPI_SteamInput_v002()`の解決に失敗した形跡もない。
+
+### 75.3 同一セッション内の対照確認: 他のflat API呼び出しは正常動作
+
+同一セッションの`Root26ActionSetHandleCompareProbe`
+（68〜69章で実装済み、`ulong`という単純戻り値型を使う
+flat API `SteamAPI_ISteamInput_GetActionSetHandle`を使用）は
+今回も正常に動作した:
+
+```
+ONE-SHOT name="Default" managedResolved=1 flatResolved=1 managed==flat=True
+STATE-CHANGE StoredActionSetHandle [handle=196... storedActionSetHandle=1 managed==stored=True flat==stored=True] [handle=917... storedActionSetHandle=1 managed==stored=True flat==stored=True]
+```
+
+**CONFIRMED**: `SteamAPI_SteamInput_v002()`によるself pointer
+解決自体、および単純戻り値型（`ulong`）を使うflat API呼び出し
+自体は、本セッションでも正常に機能している。したがって
+「v002 selfの解決に失敗している」「flat P/Invoke機構全般が
+壊れている」という単純な説明はできない。問題は
+`GetAnalogActionData`固有、あるいは**構造体を戻り値とする
+flat API呼び出し**に固有の何かに絞られる。
+
+### 75.4 新たな技術的疑い: 構造体戻り値のP/Invokeマーシャリングが機能していない可能性
+
+72.5節で「.NET P/Invokeが構造体戻り値のhidden pointer規約を
+自動的に正しく処理する」ことを**HYPOTHESISとして扱い、
+実際のruntime結果を確認するまで強くCONFIRMED扱いしない**、
+と明記していたが、今回の結果はまさにこの懸念が現実化した
+可能性を示している。
+
+**HYPOTHESIS（新規）**: `[DllImport]`で構造体を戻り値として
+宣言する現在の実装
+（`private static extern RawInputAnalogActionData
+SteamAPI_ISteamInput_GetAnalogActionData(IntPtr self, ulong
+inputHandle, ulong analogActionHandle);`）が、72.2節で
+CONFIRMED済みのネイティブ呼び出し規約
+（RCX=hidden戻り値バッファ、RDX=self、R8=inputHandle、
+R9=analogActionHandle）を.NETのP/Invokeマーシャラーが
+正しく再現できておらず、その結果、呼び出し前にゼロ初期化
+された戻り値領域がそのまま読み出されている
+（＝実際にはネイティブ関数の戻り値を正しく受け取れていない）
+可能性がある。
+
+この場合、69章で観測した「flat v002 selfはmanaged側と
+一致する」という結果（`GetActionSetHandle`）と、本章の
+「flat側が終始ゼロ固定」という結果（`GetAnalogActionData`）の
+間の不一致は、**Steam Input側の状態の違いではなく、
+P/Invoke宣言レベルの実装上の問題**によって説明できる
+可能性があり、この場合はChapter71のCase A分析
+（`GetCurrentActionSet=0`の真正性）への直接的な波及はない
+（`GetCurrentActionSet`は`ulong`という単純戻り値型であり、
+本節の疑いの対象外）。
+
+一方で、これがP/Invoke実装の問題ではなく、真に
+「flat v002 selfがGetAnalogActionDataについてはmanaged側と
+異なる状態を見ている」（ユーザー提示のCase P2）という
+可能性も排除できない。
+
+**判定（保留）**: 本節時点では、上記2つの可能性
+（P/Invoke構造体戻り値マーシャリングの実装不備 / 真のCase P2）
+のどちらであるかを切り分けられていない。断定せずUNRESOLVEDの
+まま次節以降の追加確認に委ねる。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 76. `GetAnalogActionData`構造体return問題と真のCase P2の切り分け: explicit-sret診断shim実装・ビルド・デプロイ（2026-09-08）
+
+### 76.1 診断方針
+
+75.4節の2つの可能性（P/Invoke構造体戻り値マーシャリングの
+実装不備／真のCase P2）を切り分けるため、ユーザー指示に基づき、
+72.2節でCONFIRMED済みのmachine-level ABI
+
+```
+RCX = hidden return buffer
+RDX = self
+R8  = inputHandle
+R9  = analogActionHandle
+```
+
+をC#側の明示的`out`引数として直接再現する診断用shim
+`SteamAPI_ISteamInput_GetAnalogActionData_ExplicitSret`を、
+**同じネイティブexport（`EntryPoint`指定で同一の
+`SteamAPI_ISteamInput_GetAnalogActionData`を指す）**に対して
+追加した。これはこのAPI本来のCシグネチャではなく、
+確認済みのABIをそのまま表現する診断用の宣言である。
+
+### 76.2 実装（旧方式は削除せず対照群として維持）
+
+`src/Root26AnalogActionDataCompareProbe.cs`を拡張した。
+
+- 既存の構造体return版P/Invoke宣言（`SteamAPI_
+  ISteamInput_GetAnalogActionData(IntPtr self, ulong
+  inputHandle, ulong analogActionHandle) -> RawInputAnalogActionData`）
+  は**変更せず対照群として維持**した。
+- 新たに診断用の`out`引数版
+  `SteamAPI_ISteamInput_GetAnalogActionData_ExplicitSret(out
+  RawInputAnalogActionData result, IntPtr self, ulong
+  inputHandle, ulong analogActionHandle)`を追加した
+  （`RawInputAnalogActionData`はlayout-neutralなまま変更なし）。
+- `Marshal.SizeOf<RawInputAnalogActionData>()`をセッション中
+  1回だけログするようにした（構造体サイズが期待通りか
+  runtime確認するため）。
+- 同一Sample呼び出し内で、`managed`・`OLD`（旧struct-return）・
+  `SRET`（新規explicit-sret）の3系統をすべて取得し、
+  layout-neutralな比較ロジック（`DescribeRaw`ヘルパーへ
+  共通化）を両方に適用してログする。
+- 状態変更APIは一切呼んでいない。
+
+### 76.3 ビルド・デプロイ・ハッシュ確認
+
+`ModMain.cs`の`Root26Phase4NativeRecoveryPoc.Sample()`・
+`Root26Phase8OverlayToStoreOpenPoc.Sample()`の2行がコメント
+アウトされたままであることをビルド前に再確認した。
+
+`dotnet build -c Release -v q`は0警告・0エラーで成功した。
+ビルド成果物を
+`C:\Program Files (x86)\Steam\steamapps\common\smt3hd\Mods\
+NocturneModernController.dll`へデプロイし、
+ソース側・デプロイ先のSHA-256が完全一致することを確認した
+（`511153482c3a18df571d99f707a930487a4d9feb72aed7e94e3cc8b4e4b9b81c`）。
+
+本節時点でGit commit/pushは行っていない。次に必要なのは、
+75章と同様の実機テスト手順（起動→探索→RSTICKを動かして
+DEAD確認→Guide→Overlayを閉じる→RSTICK LIVE確認→少し動かす→
+終了）による、`managed`/`OLD`/`SRET`3系統の一致状況の観測である。
+
+判定基準（ユーザー提示、そのまま採用）:
+
+```
+managed == SRET かつ OLD != managed
+→ P/Invoke struct-return方式の問題を強くCONFIRMED
+
+SRETもzero固定
+→ marshaling単独説は弱まり、v002 scope/state差を再評価
+```
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 77. 実機テスト結果: S2確定 — explicit-sretもzero固定、構造体マーシャリング単独説は棄却、真のCase P2が主要候補に（2026-09-08 12:51〜12:52台）
+
+### 77.1 `Marshal.SizeOf`確認
+
+```
+Marshal.SizeOf<RawInputAnalogActionData>()=16 bytes
+```
+
+**CONFIRMED**: 構造体サイズは期待通り16byte
+（payload 13byte + 4byteアラインメントによるパディング）。
+サイズ不一致等の単純なミスは排除できる。
+
+### 77.2 `managed`/`OLD`/`SRET`3系統比較結果
+
+RSTICKを実際に動かした区間（managed x/yが明確に非ゼロ、
+例: `x=-0.99649036 y=0.095706046`）を含め、代表的な
+STATE-CHANGE行:
+
+```
+managed(eMode=6 x=-0.99649036 y=0.095706046 bActive=True)
+OLD:flatRaw(raw0=0x00000000 raw1=0x00000000 raw2=0x00000000 raw3=0) ...
+SRET:flatRaw(raw0=0x00000000 raw1=0x00000000 raw2=0x00000000 raw3=0) ...
+```
+
+**CONFIRMED**: セッション全体（12:51:27〜12:52台、
+STATE-CHANGE/HEARTBEAT合計101件）を通じて、`OLD`
+（旧struct-return宣言）・`SRET`（新規explicit-sret診断shim）
+の**両方とも一度も0以外の値を記録しなかった**（`grep`による
+全件確認）。managed側は`x`/`y`が明確に変動し続けていたに
+関わらずである。
+
+エラー・例外ログは一切出力されていない
+（`LogErrorOnce`は発火せず）。同一セッションの
+`Root26AnalogDataFieldOffsetProbe`（`eMode=16, x=20, y=24,
+bActive=28`）・`Root26ActionSetHandleCompareProbe`
+（`managedResolved=1 flatResolved=1 managed==flat=True`）は
+いずれも前回までと同じ結果を再現しており、本セッションの
+計測環境自体に異常は見られない。
+
+### 77.3 判定: S2確定
+
+ユーザー提示の判定基準における**S2**が成立した:
+
+```
+explicit-sretもzero固定
+→ marshaling単独説は弱まり、v002 scope/state差を再評価
+```
+
+**CONFIRMED**: 72.2節でcapstone逆アセンブルによりCONFIRMED
+済みのmachine-level ABI（`RCX=hidden戻り値バッファ,
+RDX=self, R8=inputHandle, R9=analogActionHandle`）を、
+`out`引数として明示的に再現した診断shim（`SteamAPI_
+ISteamInput_GetAnalogActionData_ExplicitSret`）を用いても、
+なお戻り値は完全にゼロ固定のままだった。
+
+Evidence区分を以下の通り整理する（ユーザー指摘に基づく訂正:
+「マーシャリング単独説は棄却」は言い過ぎであり、以下のように
+段階を分けて記録する）:
+
+```
+REJECTED:
+「旧struct-return宣言（自動hidden-sret処理）だけが原因」
+という単純説 - explicit-sretへ変更しても結果が変わらな
+かったため、この特定の説明は退けられる。
+
+STRONGLY WEAKENED（棄却ではない）:
+P/Invoke/sretマーシャリング一般が主因という説 - `out`引数
+によるポインタ渡しは.NET P/Invokeの中でも基礎的かつ信頼性の
+高い機構であり、これでも結果が変わらなかったことから、
+マーシャリング機構自体が主因である可能性は大きく後退した。
+ただし、flat呼び出し自体が本当にmanaged側と同じ
+self/セッションへ到達しているかは本節時点でまだ独立に
+確認できていないため、「完全棄却」とはしない。
+
+STRONG HYPOTHESIS（有力候補）:
+v002 self / managed SteamInput interfaceのscope差
+```
+
+**HYPOTHESIS（有力候補に復帰）**: flat `v002 self`は、
+`GetAnalogActionData`という「controller/session固有の
+動的状態に依存するAPI」については、ゲームのmanaged binding
+が使っている実際のSteam Inputセッションとは異なる状態
+（常に無効・未初期化・非アクティブな状態）を見ている
+可能性が高い。
+
+### 77.4 静的名前解決系APIとの対比（新たな構図の整理）
+
+69章の結果（`GetActionSetHandle`: `managed == flat ==
+stored == 1`、完全一致）と、本章の結果
+（`GetAnalogActionData`: `managed`は実データ、`flat`は
+常にゼロ）を対比すると、以下の構図が浮かび上がる:
+
+```
+静的な名前解決API（GetActionSetHandle等）
+  → flat/managed一致（69章でCONFIRMED）
+
+動的なcontroller/session状態に依存するAPI
+（GetCurrentActionSet: 67/71章、GetAnalogActionOrigins: 67章、
+ GetAnalogActionData: 75/77章）
+  → flatは常にゼロ/デフォルト値、managedとは不一致
+```
+
+**HYPOTHESIS**: flat `v002 self`ポインタは、Steam Input
+ランタイムの「グローバルな名前解決テーブル」（action set名や
+analog action名の文字列→handleのマッピング、controller単位に
+紐づかない）には正しくアクセスできているが、「特定の
+controller handleに紐づく、現在のcontroller/session固有の
+動的状態」（現在activeなaction set、実際のstick入力値等）に
+ついては、ゲームのmanaged bindingが使っている実際の
+Steam Inputクライアントセッションとは異なるインスタンス・
+スコープを参照している可能性がある。この解釈はHYPOTHESIS
+であり、次節以降でさらに検証が必要である。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 78. Phase A: managed binding実self追跡 — `SteamAPI_SteamInput_v002()`を一切経由しない独自キャッシュ経路をCONFIRMED（2026-09-08）
+
+### 78.1 手法: Cpp2ILによる`GameAssembly.dll`の静的逆コンパイル
+
+ユーザー指示に基づき、静的解析のみ（実機テストなし）で
+managed `SteamInput`の各メソッドが実際にどのnative経路で
+self（`ISteamInput*`相当）を取得しているかを調査した。
+
+MelonLoaderに既に同梱されている`Cpp2IL.exe`
+（`MelonLoader/Dependencies/Il2CppAssemblyGenerator/Cpp2IL/`、
+このゲームの初回起動時にinterop stub生成のため既に使われている
+公式ツール）を、ゲーム本体（`smt3hd.exe`、
+`GameAssembly.dll`、`smt3hd_Data/il2cpp_data/Metadata/
+global-metadata.dat`）に対して直接実行し、
+`--use-processor callanalyzer --output-as isil`で
+ISIL（Cpp2ILの中間命令表現）ダンプを生成した。これは
+読み取り専用の静的逆コンパイル処理であり、ゲームの実行や
+Steam Input状態への影響は一切ない。
+
+出力された`Steamworks/SteamInput.txt`から、managed-bound
+（62章で確認済み）な3メソッド
+`GetAnalogActionData`・`GetActionSetHandle`・
+`GetConnectedControllers`のISIL命令列を確認した。
+
+### 78.2 3メソッドすべてで同一のself取得パターンをCONFIRMED
+
+3メソッドいずれのISIL命令列にも、**完全に同一の**self取得
+シーケンスが現れた（`GetAnalogActionData`の例、一部抜粋）:
+
+```
+016 Move rax, [0x182E4F3E0]
+017 Move rdx, [rax+184]
+...
+019 Move rbp, [rdx+176]
+...
+038 Move rdx, rbp          ; rbp (=[[0x182E4F3E0]+184]+176) がselfとして使われる
+039 Call 0, rcx, rdx, r8, r9, ...
+```
+
+`GetActionSetHandle`・`GetConnectedControllers`でも、
+アドレス値まで完全に一致する同一のチェーン
+（`[0x182E4F3E0]` → `+184`(0xB8) → `+176`(0xB0)）から
+self相当の値を取得していることをCONFIRMEDした。
+
+**CONFIRMED**: 3メソッドいずれのISIL命令列にも、
+`SteamAPI_SteamInput_v002`という関数へのcallは**一度も
+現れない**。self取得は、`GameAssembly.dll`内部の静的に
+キャッシュされたポインタチェーン
+（`[0x182E4F3E0]` → `+0xB8` → `+0xB0`）を辿るだけで完結して
+おり、steam_api64.dllのアドレス帯（65章で確認済みの
+`0x13Bxxxxxxx`系）へのcallは一つも現れない。
+
+### 78.3 `+184`(0xB8)というオフセットとの符合（未解決の符合）
+
+57〜58章で観測した`Root26FieldOffsetMapProbe`が読んでいた
+`util.Pointer + 0xb8 + 0x8`というオフセットと、本節で見つけた
+`[0x182E4F3E0] + 0xB8`という値は、`+0xB8`というオフセット値が
+偶然一致している。
+
+**UNRESOLVED（断定しない）**: `[0x182E4F3E0]`という
+グローバル変数が`SteamInputUtil.instance`相当のオブジェクトを
+指しているかどうかは、本節時点では独立に確認できていない
+（`0xB8`は一般的な小さいオフセット値であり、一致だけでは
+同一オブジェクトである証拠にはならない）。
+
+### 78.4 `[0x182E4F3E0]`の書き込み元（初期化元）の追跡: 発見できず
+
+`[0x182E4F3E0]`というグローバル変数がいつ・どこで初期化される
+かを特定するため、`GameAssembly.dll`の`.text`セクション全体
+（capstone、`skipdata=True`、8,066,071命令）を、このVAへの
+RIP相対書き込み（`mov [0x182E4F3E0], reg`のような、
+destinationオペランドとしての参照）についてスキャンした。
+
+結果、**書き込みパターンは0件**だった（読み取り
+（`mov reg, [0x182E4F3E0]`）は139件見つかったが、いずれも
+読み取りであり書き込みではない）。
+
+**HYPOTHESIS**: これはIL2CPPのよくある実装パターン
+（staticフィールドがtype単位の巨大なstatic-field-storage
+領域にまとめられ、個々のフィールドへの書き込みが
+`型の静的フィールド領域ポインタ + オフセット`という実行時
+解決の間接アドレッシングで行われ、絶対アドレスへの直接`mov`
+命令としては現れない）による可能性がある。この経路の特定は
+本節時点では断念し、UNRESOLVEDのまま次段へ進む。
+
+### 78.5 `Call 0`（間接呼び出し）の実ターゲット: 未解決
+
+3メソッドとも、self取得後の最終的なnative呼び出しは
+`Call 0, ...`という形でISILに現れ、Cpp2ILが呼び出し先
+アドレスを静的に解決できていない（レジスタ経由の間接呼び出し
+であることを示唆）。実際のマシンコードを直接capstoneで
+確認すれば、この呼び出しがvtable経由の仮想関数呼び出しなのか
+それ以外かを確認できる可能性があるが、本節時点では
+各メソッドの正確なネイティブ開始アドレス（RVA/VA）を
+静的に取得できておらず（Cpp2ILの`diffable-cs`出力形式は
+意図的にアドレス情報を含まない）、この確認は次段以降の
+課題として残す。
+
+### 78.6 判定: Case I1方向への強いHYPOTHESIS（I1確定ではない）
+
+ユーザー提示の判定基準に照らすと、本節の結果は**Case I1**
+（`managed self != v002 self` → 「flat v002は別Steam Input
+interface/sessionを見ている」がCONFIRMED方向）を強く支持する
+静的Evidenceである。ただし、以下の理由により**I1をCONFIRMED
+とはしない**:
+
+- `[0x182E4F3E0]+0xB8+0xB0`という**経路**が
+  `SteamAPI_SteamInput_v002()`とは異なることは静的に
+  CONFIRMEDされたが、その経路の**終点（実際のself値）**が
+  runtime上で`SteamAPI_SteamInput_v002()`の戻り値と
+  数値として異なるかどうかは、まだ直接比較していない
+  （理論上、偶然同じISteamInputインスタンスを指している
+  可能性を完全には排除できない）。
+- `Call 0`の実ターゲットが本当にISteamInputの仮想関数
+  テーブル経由なのか、確認できていない。
+
+### 78.7 Phase B案（未実装、提案のみ）
+
+上記を踏まえ、Phase Bとして以下のread-only runtime probeを
+提案する（実装はまだ行っていない）:
+
+- `GameAssembly.dll`の実行時ロードベースアドレス
+  （`Process.GetCurrentProcess().MainModule`等、または
+  既存のモジュール一覧から取得）を基準に、静的解析で
+  CONFIRMEDした`0x182E4F3E0`のRVAオフセットを加算し、
+  `Marshal.ReadIntPtr`で`[0x182E4F3E0]`→`+0xB8`→`+0xB0`の
+  チェーンを読み取り、`managedSelfCandidate`として取得する。
+- 同一Sample内で`SteamAPI_SteamInput_v002()`の戻り値
+  （`flatSelf`）と比較し、一致するか否かをログする。
+
+これは既存probe群（`pad.Controller`等の公開managed stateのみ
+を読む）よりも低レベルな手法（GameAssembly.dllのグローバル
+変数への生ポインタ算術アクセス）であるため、実装の是非・
+安全性の再確認をユーザーに諮った上で進める。
+
+本節は静的解析のみであり、実装・ビルド・デプロイは行って
+いない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 79. Phase B: `Root26ManagedSelfTraceProbe`実装・ビルド・デプロイ（2026-09-08）
+
+### 79.1 `GameAssembly.dll`実PE ImageBaseの確認
+
+推測せず、`GameAssembly.dll`のPEヘッダ自体を`pefile`で
+直接読み取り確認した:
+
+```
+ImageBase: 0x180000000
+RVA of 0x182E4F3E0: 0x2E4F3E0
+```
+
+**CONFIRMED**: 78章のcapstone解析で使用したimage base
+（`0x180000000`）は、ファイル自体のPEヘッダと一致しており、
+仮定ではなく確認済みの値である。
+
+### 79.2 実装
+
+`src/Root26ManagedSelfTraceProbe.cs`として実装した。
+
+- `System.Diagnostics.Process.GetCurrentProcess().Modules`
+  （自プロセス自身のモジュール一覧、injectionや他プロセスへの
+  アタッチではない、.NET標準の自己イントロスペクションAPI）
+  から`GameAssembly.dll`の実行時ロードベースアドレスを取得する。
+- 78.2節でCONFIRMED済みのRVA（`0x2E4F3E0`、静的VAではなく
+  ImageBaseとの差分から算出）をこのベースアドレスへ加算し、
+  `globalSlotAddress`を求める。
+- `Marshal.ReadIntPtr`**のみ**を使い、
+  `p0 = *(globalSlotAddress)` → `p1 = *(p0+0xB8)` →
+  `managedSelfCandidate = *(p1+0xB0)`の順にチェーンを辿る。
+  各段階で`IntPtr.Zero`なら安全に中断し、それ以上辿らない。
+  各段階の値（`GameAssemblyBase`/`targetRva`/
+  `globalSlotAddress`/`p0`/`p1`/`managedSelfCandidate`/
+  `flatSelf`/`samePointer`）をすべてログする。
+- `Marshal.Write*`は一切使用していない。状態変更Steam APIは
+  一切呼んでいない（唯一の呼び出しは既存probe群と同じ
+  `SteamAPI_SteamInput_v002()`のみ）。
+- 各ポインタ逆参照は個別に`try/catch`で囲み、例外時はその場で
+  中断してWarningログを出す。`Sample()`全体も`try/catch`で
+  囲み、いかなる例外でもMOD本体を落とさず、このprobeだけを
+  以後のセッションで無効化する（`_done`フラグにより実質的に
+  最初の1回で無効化）。
+- セッション中1回だけ実行する（構造的な診断チェックであり、
+  フレームごとに変化する値ではないため）。
+- `GameAssembly.dll`・`steamclient64.dll`・
+  `GameOverlayRenderer64.dll`・`steam_api64.dll`のいずれに
+  対しても、native detour/patch/injection/hookは一切行って
+  いない。本probeは自プロセス自身が既にアクセス権を持つ
+  メモリ空間を読み取るのみであり、デバッガのメモリビューと
+  同様の性質のread-only操作である。
+
+`ModMain.cs`の`Root26AnalogActionDataCompareProbe.Sample();`の
+直後に`Root26ManagedSelfTraceProbe.Sample();`を追加した。
+
+### 79.3 ビルド・デプロイ・ハッシュ確認
+
+`ModMain.cs`の`Root26Phase4NativeRecoveryPoc.Sample()`・
+`Root26Phase8OverlayToStoreOpenPoc.Sample()`の2行がコメント
+アウトされたままであることをビルド前に再確認した。
+
+`dotnet build -c Release -v q`は0警告・0エラーで成功した。
+ビルド成果物を
+`C:\Program Files (x86)\Steam\steamapps\common\smt3hd\Mods\
+NocturneModernController.dll`へデプロイし、
+ソース側・デプロイ先のSHA-256が完全一致することを確認した
+（`ded7a670527f4da99675824938b5abcbd42c17a87877d335d98d6b97dfd4d6ea`）。
+
+本節時点でGit commit/pushは行っていない。次に必要なのは、
+通常起動→数秒待機程度の実機テストによる、
+`Root26ManagedSelfTraceProbe`の`managedSelfCandidate`/
+`flatSelf`/`samePointer`ログの観測である
+（Guide操作は必須ではない - self取得経路自体の比較が目的の
+ため）。
+
+判定基準（ユーザー提示、そのまま採用）:
+
+```
+managedSelfCandidate != flatSelf
+→ Case I1をruntime上でもCONFIRMED方向へ
+
+managedSelfCandidate == flatSelf
+→ 単純なscope差説は弱まり、次は間接call target / vtable slot /
+  wrapper経路を追う
+```
+
+一時Cpp2ILディレクトリ（`C:\tmp_cpp2il_out`、
+`C:\tmp_cpp2il_out2`）はPhase B完了まで残している。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 80. `Root26ManagedSelfTraceProbe`のone-shotタイミング修正（初期化前ゼロ値によるfalse-inconclusive回避）（2026-09-08）
+
+### 80.1 ユーザー指摘の受領
+
+79章の実装は「`Sample()`の最初の呼び出しで即座に`_done=true`」
+という単純なone-shotだった。ユーザーより、Steam Input/IL2CPP
+のstatic stateが初期化される前の最初のフレームで
+`p0`/`p1`/`managedSelfCandidate`/`flatSelf`のいずれかが
+たまたま`0`だった場合、そのままprobeが終了し、セッション中
+二度と再試行できず、「本当は初期化後に比較すれば区別できた
+はずなのに、たまたま最初のタイミングが早すぎて
+false-inconclusiveになる」リスクがあるとの指摘を受けた。
+
+これは正しい指摘であり、修正した。
+
+### 80.2 修正内容
+
+`src/Root26ManagedSelfTraceProbe.cs`を以下の方針で書き換えた:
+
+- chainの各段階（`p0`/`p1`/`managedSelfCandidate`/
+  `flatSelf`）のいずれかが`IntPtr.Zero`の場合、**状態変更なし
+  でそのフレームをSKIPし、後続フレームで再試行**するように
+  変更した（読み取りのみ、書き込みは一切なし）。
+- **`managedSelfCandidate`と`flatSelf`の両方が非ゼロになった
+  時点で、完全な比較結果を1回だけログし、その時点でのみ
+  `_done=true`**とする方式に変更した。
+- 待機中のログ出力は最大3秒間隔（`WaitLogIntervalMs`）に
+  抑制し、ログ洪水を防止した。
+- 最大15秒（`RetryTimeoutMs`）のタイムアウトを設け、
+  それまでにchainが完全に解決しなければ
+  `INCONCLUSIVE: full pointer chain did not resolve within
+  15000ms`としてprobeを終了する。
+- 例外時のfail-safe動作（即座に`_done=true`、Warning 1回、
+  MOD本体は継続）は従来通り維持した。
+- `Marshal.ReadIntPtr`のみ使用・`Marshal.Write*`不使用・
+  状態変更Steam API呼び出しなしという安全制約は変更していない。
+
+### 80.3 ビルド・デプロイ・ハッシュ確認
+
+`ModMain.cs`の`Root26Phase4NativeRecoveryPoc.Sample()`・
+`Root26Phase8OverlayToStoreOpenPoc.Sample()`の2行がコメント
+アウトされたままであることをビルド前に再確認した。
+
+`dotnet build -c Release -v q`は0警告・0エラーで成功した。
+ビルド成果物を
+`C:\Program Files (x86)\Steam\steamapps\common\smt3hd\Mods\
+NocturneModernController.dll`へデプロイし、
+ソース側・デプロイ先のSHA-256が完全一致することを確認した
+（`8f10ef8d5c5f2699ae185a33a84ca2ca18a601b6d5712be0f57fea07add0008a`）。
+
+本節時点でGit commit/pushは行っていない。次に必要なのは、
+通常起動→数秒待機→終了という実機テスト（Guide・RSTICK操作
+いずれも不要）による、`Root26ManagedSelfTraceProbe`の
+`RESOLVED`（または`INCONCLUSIVE`）ログの観測である。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 81. 実機テスト結果: `managedSelfCandidate != flatSelf`をruntime上でCONFIRMED（Case I1）（2026-09-08 13:37台）
+
+### 81.1 テスト条件と結果
+
+ユーザー提案通り、通常起動→数秒待機→終了という最小テストを
+実施した（Guide・RSTICK操作は不要）。
+
+```
+GameAssemblyBase=0x7FF83F1A0000 targetRva=0x2E4F3E0
+RESOLVED globalSlotAddress=0x7FF841FEF3E0
+  p0=0x19ADCCAE250
+  p1=0x199932B2EE0
+  managedSelfCandidate=0x19B47A507A0
+  flatSelf=0x19B48020840
+  samePointer=False
+```
+
+**CONFIRMED**: chainは**最初のSample()呼び出しで即座に完全
+解決**した（`WAITING`/`INCONCLUSIVE`ログは0件 - `grep`で確認）。
+つまりGuide操作等を経ずとも、通常起動〜探索開始までの間に
+Steam Input側のstatic stateは既に初期化済みであり、80章で
+懸念した「初期化前ゼロ値によるfalse-inconclusive」は
+本セッションでは発生しなかった。
+
+同一セッションの`Root26ActionSetHandleCompareProbe`は今回も
+`managedResolved=1 flatResolved=1 managed==flat=True`を
+記録しており、名前解決系APIの一致（69章）は再現している。
+
+### 81.2 Evidence区分（慎重な整理）
+
+**CONFIRMED**: 本セッションにおいて、
+`managedSelfCandidate`（78章のISIL解析でCONFIRMEDした
+キャッシュチェーン`[0x182E4F3E0]→+0xB8→+0xB0`をruntimeで
+実際に辿って読み取った値、`0x19B47A507A0`）と、`flatSelf`
+（`SteamAPI_SteamInput_v002()`の戻り値、`0x19B48020840`）は、
+**数値として明確に異なる**。
+
+**区別すべき点（断定しすぎない）**: `managedSelfCandidate`は
+「78章のISIL解析で特定したポインタチェーンの終点の値」で
+あり、これが実際に`GetAnalogActionData`等の呼び出し瞬間に
+RDXレジスタへ渡される値と厳密に同一であることは、78章の
+静的解析（3メソッドすべてがこの同一チェーンからself相当の
+値を取得している、というISILレベルの確認）に基づく対応関係
+であって、実際の呼び出し瞬間のレジスタ値を直接キャプチャした
+ものではない。この対応関係自体は78章で3メソッド一致という
+形でかなり強く支持されているが、「chainの終点＝実際に使われる
+self」という一段の推論を経ていることは明記しておく。
+
+### 81.3 判定: Case I1が実機データでもCONFIRMED方向に強化
+
+78.6節で保留していたCase I1（`managed self != v002 self`）が、
+本節の実機データにより**runtime上でも直接CONFIRMED**された
+（上記81.2の限定付きで）。
+
+これにより、75〜77章の一連の観測
+（`GetAnalogActionData`のflat側が常にゼロ固定、
+67/71章の`GetCurrentActionSet`のflat側が常に`0`固定）が、
+単一の説明で整合的に繋がる:
+
+```
+managed route （self=0x19B47A507A0）
+  → GetAnalogActionData: 実データを返す
+  → （GetCurrentActionSetはmanaged非bindingのため直接比較対象外）
+
+flat v002 route （self=0x19B48020840）
+  → GetAnalogActionData: 常にゼロ
+  → GetCurrentActionSet: 常に0
+  → 名前解決系（GetActionSetHandle）のみ、たまたま
+    managed側と同じ結果（=1）を返す
+```
+
+**HYPOTHESIS（更新）**: `managed`ルートと`flat v002`ルートは
+**異なるISteamInputインスタンス（異なるSteam Input内部
+セッション/スコープ）**に対応しており、`flat v002`側の
+インスタンスは、controller固有の動的状態
+（現在のactive action set、実際のanalog入力値）については
+実質的に無効/未初期化な状態のままである可能性が高い。
+一方、`"Default"`のような静的な名前→handle解決は、両
+インスタンスが同じゲームのaction manifest定義を参照して
+いれば、インスタンスが異なっていても同じ結果になり得るため、
+69章の一致はこの仮説と矛盾しない。
+
+この仮説は、`GetCurrentActionSet=0`(67/71章)・
+`GetAnalogActionOrigins=0`(67章)・`GetAnalogActionData`が
+常にゼロ(75/77章)という、これまで個別に観測してきた複数の
+「flat側だけおかしい」という現象を、単一の原因
+（flat v002 selfが別インスタンスである）で統一的に説明できる
+候補として、これまでで最も有力な仮説である。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 82. Phase A: vtable identity比較の実装・ビルド・デプロイ（2026-09-08）
+
+### 82.1 目的と使用するvtable slot（既存CONFIRMED分のみ）
+
+81章で`managedSelfCandidate != flatSelf`がruntime上で
+CONFIRMEDされたことを受け、両者が「同じISteamInput実装の
+別インスタンス」なのか「別interface/別ラッパー」なのかを
+判定するため、read-onlyでvtableポインタと、既存章で
+capstone逆アセンブルによりCONFIRMED済みのvtable slot
+オフセットのみを比較する。新規・未確認のslotは一切
+推測で追加していない:
+
+```
+GetConnectedControllers : +0x18  （65.3節でCONFIRMED）
+GetActionSetHandle      : +0x20  （68.4/74章でCONFIRMED）
+GetCurrentActionSet     : +0x30  （65.3節でCONFIRMED）
+GetAnalogActionData     : +0x78  （72.2節でCONFIRMED）
+```
+
+### 82.2 実装
+
+`src/Root26VtableIdentityProbe.cs`を新規実装した。
+
+- `Root26ManagedSelfTraceProbe`が`managedSelfCandidate`/
+  `flatSelf`の両方を非ゼロで確定した直後（81章のRESOLVEDログ
+  の直後）に、`Root26VtableIdentityProbe.Compare(...)`を
+  呼び出す形にした。独立したpolling probeではなく、
+  81章のprobeの後続分析ステップとして実装した
+  （`ModMain.OnUpdate()`への新規登録は不要）。
+- `managedVtable = Marshal.ReadIntPtr(managedSelfCandidate)`・
+  `flatVtable = Marshal.ReadIntPtr(flatSelf)`を取得し、
+  一致するかどうかをログする。
+- 上記4スロットそれぞれについて、
+  `managedFn = Marshal.ReadIntPtr(managedVtable+slot)`・
+  `flatFn = Marshal.ReadIntPtr(flatVtable+slot)`を取得し、
+  一致するかどうかをログする。
+- 各function pointer値について、`Process.Modules`
+  （自プロセス自身のモジュール一覧、read-only）を走査し、
+  そのアドレスがどの既読み込みモジュールの範囲に属するかを
+  あわせてログする。
+- **function pointerは一切呼び出さない**（純粋なデータ比較の
+  みであり、`Marshal.GetDelegateForFunctionPointer`等による
+  呼び出しは行わない）。`Marshal.Write*`も使用していない。
+  各読み取りは`try/catch`で保護し、例外時はそのモジュール名
+  取得のみ失敗として扱い、他の比較には影響しない設計とした。
+- Steam API呼び出しはこのクラスからは一切行っていない
+  （self値は呼び出し元の`Root26ManagedSelfTraceProbe`から
+  受け取るのみ）。
+
+### 82.3 ビルド・デプロイ・ハッシュ確認
+
+`ModMain.cs`の`Root26Phase4NativeRecoveryPoc.Sample()`・
+`Root26Phase8OverlayToStoreOpenPoc.Sample()`の2行がコメント
+アウトされたままであることをビルド前に再確認した。
+
+初回ビルドで`module.ModuleName`に関するCS8603警告
+（null許容参照型: null参照戻り値である可能性）が1件発生した
+ため、`module.ModuleName ?? "unnamed-module"`へ修正し、
+0警告0エラーで再ビルドした。
+
+ビルド成果物を
+`C:\Program Files (x86)\Steam\steamapps\common\smt3hd\Mods\
+NocturneModernController.dll`へデプロイし、
+ソース側・デプロイ先のSHA-256が完全一致することを確認した
+（`6dc0fd887f4505809c673c9a1b6703062847745a606e24a55c50b66b54cfeeab`）。
+
+本節時点でGit commit/pushは行っていない。次に必要なのは、
+81章と同様の実機テスト（通常起動→数秒待機→終了、Guide・
+RSTICK操作いずれも不要）による、`Root26VtableIdentity`の
+`sameVtable`・4スロットの`sameFn`・モジュール範囲ログの
+観測である。
+
+判定基準（ユーザー提示、そのまま採用）:
+
+```
+Case V1: self different / vtable same / function slot same
+→ 「同じISteamInput実装だが、managed側とv002側が異なる
+   インスタンス」をCONFIRMED方向へ
+
+Case V2: self different / vtable different / function slot same
+→ wrapper/interface objectは異なるが、実処理実装を
+  共有している可能性
+
+Case V3: vtable different / function slot different
+→ 別interface/version/scopeの可能性がさらに強まる
+```
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 83. 実機テスト結果: Case V1確定 — vtable完全一致、4スロットすべて`steamclient64.dll`内の同一アドレス（2026-09-08 13:53台）
+
+### 83.1 テスト結果
+
+81章と同じ最小テスト（通常起動→数秒待機→終了、Guide・RSTICK
+操作いずれも不要）を実施した。
+
+```
+RESOLVED managedSelfCandidate=0x1995E0E07A0 flatSelf=0x1995E6B0840 samePointer=False
+
+managedVtable=0x7FF8E2A58C40 flatVtable=0x7FF8E2A58C40 sameVtable=True
+
+GetConnectedControllers(+0x18) managedFn=0x7FF8E1E80D20[steamclient64.dll] flatFn=0x7FF8E1E80D20[steamclient64.dll] sameFn=True
+GetActionSetHandle(+0x20)      managedFn=0x7FF8E1E80AF0[steamclient64.dll] flatFn=0x7FF8E1E80AF0[steamclient64.dll] sameFn=True
+GetCurrentActionSet(+0x30)     managedFn=0x7FF8E1E80D90[steamclient64.dll] flatFn=0x7FF8E1E80D90[steamclient64.dll] sameFn=True
+GetAnalogActionData(+0x78)     managedFn=0x7FF8E1E80BB0[steamclient64.dll] flatFn=0x7FF8E1E80BB0[steamclient64.dll] sameFn=True
+```
+
+**CONFIRMED**: `managedSelfCandidate`と`flatSelf`は
+（81章の通り）異なるポインタ値であるにも関わらず、
+**`managedVtable`と`flatVtable`は完全に同一のアドレス**
+（`0x7FF8E2A58C40`）である。さらに、既存章でCONFIRMED済みの
+4つのvtable slot（`+0x18`/`+0x20`/`+0x30`/`+0x78`）すべてに
+ついて、`managedFn`と`flatFn`が**完全に同一のアドレス**を
+指しており、いずれも`steamclient64.dll`（Steamクライアント
+本体、本調査全体を通じて一貫して「触れない・パッチしない」
+対象としてきたバイナリ）のアドレス範囲に属することを、
+`Process.Modules`によるread-only照合で確認した
+（function pointerは一度も呼び出していない）。
+
+### 83.2 判定: Case V1確定
+
+ユーザー提示の判定基準における**Case V1**
+（`self different / vtable same / function slot same`）が
+成立した。
+
+**CONFIRMED**: `managedSelfCandidate`と`flatSelf`は、
+**同一のISteamInput実装（同一vtable、同一関数実装コード、
+いずれも`steamclient64.dll`内）を持つ、異なる2つの
+インスタンス（異なるオブジェクト、同一クラス）**である。
+C++の一般的な実装では、同一クラスの全インスタンスが同一の
+vtableを共有するため、「vtableが完全一致するのにselfが
+異なる」という本節の観測結果は、この解釈と整合する。
+
+これにより、「managed側とflat v002側は別のwrapper/別
+interfaceを使っている」という78.6節のCase I3的な可能性は
+後退し、「**同じISteamInput実装の、異なるインスタンス/
+セッションを指している**」という81.3節のHYPOTHESISが
+Case V1として大きく強化された。
+
+### 83.3 次段（Chapter84予告、未実装）
+
+同一実装・異なるインスタンスであることがCONFIRMEDされたため、
+次に検証すべきは「`managedSelfCandidate`を実際にflat exportの
+第1引数として渡した場合に、`flatSelf`を渡した場合とは異なり
+実データが返るか」である。これが確認できれば、
+「flat APIそのものが壊れているのではなく、
+`SteamAPI_SteamInput_v002()`が返すselfがゲーム本体の使用中
+selfと異なるインスタンスだったことが動的状態不一致の原因」
+という結論をほぼ確定できる。この実装は次章（Chapter84）で
+ユーザーと合意の上、read-only（既存の`GetAnalogActionData`
+呼び出しと同じ、状態変更なしのgetter呼び出し）として
+進める。本節では実装していない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 84. `Root26AnalogDataSelfSwapProbe`実装・ビルド・デプロイ（2026-09-08）
+
+### 84.1 目的と設計
+
+83章のCase V1（同一vtable・同一関数実装、異なるインスタンス）
+を受け、self差**のみ**が動的状態不一致の原因かを直接切り分ける
+ため、`src/Root26AnalogDataSelfSwapProbe.cs`を新規実装した。
+
+同一フレーム内で以下3系統を、同一の`inputHandle`/
+`analogActionHandle`（既存probe群と同じ動的取得規約、
+ハードコードなし）に対して取得・比較する:
+
+```
+A) managed binding: SteamInput.GetAnalogActionData(inputHandle, analogActionHandle)
+B) 同一flat export、self=flatSelf（SteamAPI_SteamInput_v002()）
+C) 同一flat export、self=managedSelfCandidate（78/79/81章のキャッシュ
+   チェーンから取得）
+```
+
+BとCは**全く同じネイティブコードパス**
+（同一`EntryPoint`、76章でCONFIRMED済みのexplicit-sret
+診断shimをそのまま再利用）を通り、**selfだけが異なる**。
+これにより、thunk ABI・構造体レイアウト・P/Invoke
+マーシャリングといった他の変数を一切変えず、self変数のみを
+分離して検証できる設計とした。
+
+`managedSelfCandidate`は、81章の一発one-shot probeとは異なり、
+**毎フレーム再取得**する（チェーンのいずれかの段階が0なら
+その回はスキップし例外にはしない）。これは今回の実機テストで
+DEAD→Guide→LIVEの全区間にわたって観測を継続する必要があり、
+81章のprobeのような「最初の1回で確定して終了」という設計では
+目的に合わないためである。各ポインタ読み取りは
+`Marshal.ReadIntPtr`のみで軽量であり、read-onlyである。
+
+`GetAnalogActionData`のfield layout（layout-neutralな生word
+構造体、`raw0`/`raw1`/`raw2`/`raw3`）は72.2/74/76章と完全に
+同一のものを再利用した。managed側の値（`eMode`/`x`/`y`/
+`bActive`）とあわせてログする。
+
+状態変更APIの呼び出しは一切ない。`Marshal.Write*`も使用して
+いない。native detour/patch/injection/hookも行っていない
+（既存probe群と同じread-onlyのメモリ読み取り・既に安全性
+確認済みの2つのgetter呼び出しのみ）。
+
+`ModMain.cs`の`Root26ManagedSelfTraceProbe.Sample();`の直後に
+`Root26AnalogDataSelfSwapProbe.Sample();`を追加した。
+
+### 84.2 ビルド・デプロイ・ハッシュ確認
+
+`ModMain.cs`の`Root26Phase4NativeRecoveryPoc.Sample()`・
+`Root26Phase8OverlayToStoreOpenPoc.Sample()`の2行がコメント
+アウトされたままであることをビルド前に再確認した。
+
+`dotnet build -c Release -v q`は0警告・0エラーで成功した。
+ビルド成果物を
+`C:\Program Files (x86)\Steam\steamapps\common\smt3hd\Mods\
+NocturneModernController.dll`へデプロイし、
+ソース側・デプロイ先のSHA-256が完全一致することを確認した
+（`8203620d0a131650448ede44bce87578e23a0689dba18944aac4d70660166241`）。
+
+本節時点でGit commit/pushは行っていない。次に必要なのは、
+ユーザー提案の実機テスト手順（起動→探索→RSTICKを明確に
+動かす。可能であればDEAD中に動かす→Guide→Overlayを閉じる→
+LIVE後にもう一度動かす、まで）による、
+`Root26AnalogDataSelfSwapProbe`のSTATE-CHANGE/HEARTBEATログの
+観測である。
+
+判定基準（ユーザー提示、そのまま採用）:
+
+```
+Case A: managed=実値 / viaFlatSelf=0 / viaManagedSelf=実値
+→ 非常に強いCONFIRMED。flat APIそのものではなく
+  SteamAPI_SteamInput_v002()が返す別インスタンスselfが
+  動的状態不一致の原因、をほぼ確定。
+
+Case B: viaManagedSelfも0
+→ self差だけでは説明できない。managed wrapperの実際の
+  call ABI/間接call target/wrapper前後処理を次段で追う。
+
+Case C: viaManagedSelfは非0だがmanaged bindingと値が
+一致しない
+→ self差は関与しているが、wrapper差または呼び出し条件差が
+  残る。
+```
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 85. 実機テスト結果: Case A確定 — `viaManagedSelf`はmanaged bindingとbit完全一致、`viaFlatSelf`はセッション全体で終始ゼロ固定（2026-09-08 14:03〜14:04台）
+
+### 85.1 DEAD区間の結果
+
+起動直後（Guide前、`x=y=0`）:
+
+```
+managed(eMode=6 x=0 y=0 bActive=True)
+viaFlatSelf(raw0=0 raw1=0 raw2=0 raw3=0)
+viaManagedSelf(raw0=6[int=6] raw1=0 raw2=0 raw3=1)
+```
+
+この時点で既に、`viaManagedSelf`の`raw0=6`・`raw3=1`は、
+managed側の`eMode=6`・`bActive=True(1)`と一致している
+（`raw1=0`・`raw2=0`はmanaged`x=0`・`y=0`とも一致するが、
+DEAD区間ではmanaged側自体もゼロであるため、この時点だけでは
+偶然の一致を排除できない）。`viaFlatSelf`は全フィールドが
+ゼロのままである。
+
+### 85.2 Guide後・RSTICKを実際に動かした区間の結果（決定的）
+
+Guide→Overlayを閉じた後、RSTICKを実際に動かした区間
+（14:04:07台のResetController発火の後、14:04:08〜09台）:
+
+```
+managed(eMode=6 x=-0.95361185 y=0.30100405 bActive=True)
+viaFlatSelf(raw0=0 raw1=0 raw2=0 raw3=0)
+viaManagedSelf(raw0=6[int=6] raw1=0xBF741FE8[float=-0.95361185]
+               raw2=0x3E9A1D34[float=0.30100405] raw3=1)
+```
+
+**CONFIRMED**: `viaManagedSelf`の`raw1`/`raw2`は、managed側の
+`x`/`y`と**16進表現・浮動小数点表現ともに完全一致（bit-exact）**
+している。これはRSTICKの値が変化するたびに（`grep`で確認した
+複数のSTATE-CHANGE行すべてで）一貫して成立しており、偶然の
+一致ではあり得ない。一方、`viaFlatSelf`は、セッション全体
+（14:03:50〜14:04台、DEAD区間・実際にRSTICKを動かしたLIVE区間
+の両方を含む全STATE-CHANGE/HEARTBEATにおいて）を通じて
+**一度も0以外の値を記録しなかった**（`grep`による全件確認）。
+
+### 85.3 判定: Case A確定
+
+ユーザー提示の判定基準における**Case A**
+（`managed=実値` / `viaFlatSelf=0` / `viaManagedSelf=実値`）が
+成立した。
+
+**CONFIRMED**: 同一のflat export・同一のネイティブコードパス
+に対し、`self`引数だけを`flatSelf`
+（`SteamAPI_SteamInput_v002()`）から`managedSelfCandidate`
+（78/79/81章のキャッシュチェーン由来）へ差し替えたところ、
+戻り値がゼロ固定から、managed bindingとbit完全一致する実データ
+へと変化した。これにより、67〜83章を通じて観測してきた
+「flat側の動的API（`GetCurrentActionSet`・
+`GetAnalogActionOrigins`・`GetAnalogActionData`）が常に
+ゼロ/無効値を返す」という一連の現象の原因は、
+
+> **flat APIの実装そのものではなく、
+> `SteamAPI_SteamInput_v002()`が返すselfが、ゲーム本体
+> （managed binding）が実際に使用しているSteam Input
+> インスタンスとは異なるインスタンスだったこと**
+
+にあることが、実機データにより強くCONFIRMEDされた。
+
+### 85.4 副産物: `InputAnalogActionData_t`のネイティブfield順序が実データでCONFIRMED
+
+本節の結果は、72.3節で撤回した「ネイティブfield順序」の
+問題も、実データによって解決する副産物をもたらした。
+`raw0=eMode`・`raw1=x`・`raw2=y`・`raw3=bActive`という対応が、
+RSTICKの実際の非ゼロ値との一致によって直接確認できたため、
+
+**CONFIRMED**: ネイティブ`InputAnalogActionData_t`の
+実際のメモリレイアウトは`eMode@0x0, x@0x4, y@0x8,
+bActive@0xc`であり、これはmanaged側のフィールド宣言順
+（`eMode, x, y, bActive`）、および74章でIL2CPPランタイム自身の
+field offsetテーブル照会から得た相対配置と、すべて一致する。
+72.1〜72.3節で撤回した「意味的field順序の不明」という
+UNRESOLVED点は、本節をもって解消された。
+
+### 85.5 今後の含意（HYPOTHESISに留める）
+
+DEAD区間（Guide前）の時点で既に`viaManagedSelf`が正しい
+`eMode`/`bActive`を返していたことから、**`managedSelfCandidate`
+を使えば、Guide操作を経ずとも動的なSteam Input状態を読み取れる
+可能性がある**。これは右スティック問題の根本原因調査にとって
+重要な示唆であるが、本節はあくまで「flat v002 selfとの差異が
+原因である」ことのCONFIRMEDに留め、対処法の実装は次章以降で
+ユーザーと合意の上で検討する。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 86. Chapter86準備: RVA確定のためのモジュールbase address記録機能を追加（steamclient64.dll静的解析の前提整備）（2026-09-08）
+
+### 86.1 静的解析着手前の技術的な壁
+
+ユーザー指示に基づき、`steamclient64.dll`内の
+`GetAnalogActionData`実装をCapstoneで静的解析するPhase Aに
+着手しようとしたが、83章のログにある関数アドレス
+（`managedFn=0x7FF8E1E80BB0[steamclient64.dll]`）は、その
+セッション固有のASLR配置後の**絶対アドレス**であり、
+`steamclient64.dll`の**その時点でのロードベースアドレス**を
+ログに残していなかったため、ディスク上のファイル
+（`C:\Program Files (x86)\Steam\steamclient64.dll`、
+`pefile`でImageBase=`0x138000000`を確認済み）における
+正確なRVA（＝ファイルオフセット）を、推測なしに逆算する
+ことができなかった。
+
+推測でのRVA割り出しはユーザー指示（「推測offsetは禁止」）に
+反するため行わず、正直にこの制約を報告する。
+
+**補足（安全性の確認）**: `steamclient64.dll`は本調査全体を
+通じて「絶対に触れない・パッチしない」対象として扱ってきたが、
+今回行うのはこれまで`steam_api64.dll`に対して繰り返し行って
+きたのと同じ**読み取り専用の静的逆アセンブル解析**
+（ディスク上のファイルを`pefile`/`capstone`で読むだけ）で
+あり、`steamclient64.dll`自体の実行・改変・注入・フックは
+一切行わない。安全制約（「Steamバイナリへのpatch/injection/
+hook禁止」）とは矛盾しない。
+
+### 86.2 対応: `Root26VtableIdentityProbe`のログにモジュールbase address・RVAを追加
+
+新しいSteam API呼び出しを追加せず、既存の`Process.Modules`
+機構（82章で既に使用、read-only）の出力を拡張する形で
+対応した。`DescribeModuleRange`が、モジュール名だけでなく
+`moduleBase`（そのセッションでの実行時ロードベースアドレス）
+と`rva`（`address - moduleBase`）もあわせて返すように変更した。
+
+これにより、次回同様のテスト（82/83章と同一の「起動→数秒
+待機」、Guide/RSTICK操作は今回も不要）を実行すれば、
+`GetAnalogActionData`（および他3スロット）の正確なRVAが
+ログから直接読み取れるようになり、ASLRに関わらず
+`steamclient64.dll`ファイル自体の静的disassembly対象
+アドレスを、推測なしに確定できる。
+
+### 86.3 ビルド・デプロイ・ハッシュ確認
+
+`ModMain.cs`の`Root26Phase4NativeRecoveryPoc.Sample()`・
+`Root26Phase8OverlayToStoreOpenPoc.Sample()`の2行がコメント
+アウトされたままであることをビルド前に再確認した。
+
+`dotnet build -c Release -v q`は0警告・0エラーで成功した。
+ビルド成果物を
+`C:\Program Files (x86)\Steam\steamapps\common\smt3hd\Mods\
+NocturneModernController.dll`へデプロイし、
+ソース側・デプロイ先のSHA-256が完全一致することを確認した
+（`ce7db609cf15086f8bb549964e547705d475df1ce161c842b077a1e355ad54b1`）。
+
+本節時点でGit commit/pushは行っていない。次に必要なのは、
+82/83章と同一の最小実機テスト（Guide・RSTICK操作いずれも
+不要）による、`Root26VtableIdentity`ログの
+`moduleBase`/`rva`の観測である。これによりPhase A（steamclient64
+.dllの静的disassembly）に必要な正確なRVAが得られる。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 87. Phase A: `steamclient64.dll`内`GetAnalogActionData`実装の静的解析 — 委譲(delegation)パターンを発見、真のself候補は`[self+0x8]`（2026-09-08）
+
+### 87.1 実機テスト結果: 正確なRVAの確定
+
+```
+GetConnectedControllers rva=0x710D20
+GetActionSetHandle      rva=0x710AF0
+GetCurrentActionSet     rva=0x710D90
+GetAnalogActionData     rva=0x710BB0
+moduleBase（そのセッション）=0x7FF8E1770000
+```
+
+**CONFIRMED**: 前回セッションと同様、`managedFn`と`flatFn`は
+今回もrva単位で完全に一致した（`sameFn=True`）。
+
+### 87.2 `GetAnalogActionData`実装の完全逆アセンブル
+
+ディスク上の`C:\Program Files (x86)\Steam\steamclient64.dll`
+（`pefile`でImageBase=`0x138000000`を確認済み）に対し、
+RVA `0x710BB0`から`ret`到達まで、read-onlyでcapstone
+逆アセンブルした（ファイルの実行・改変・注入・フックは一切
+行っていない）:
+
+```
+0x138710bb0: push rbx
+0x138710bb2: sub rsp, 0x30
+0x138710bb6: mov rcx, qword ptr [rcx + 8]     ; ★RCX(self)+0x8の値を新rcxに
+0x138710bba: mov r10, r8
+0x138710bbd: mov r8d, dword ptr [rip + 0x10d359c]  ; グローバルフラグ
+0x138710bc4: mov rbx, rdx
+0x138710bc7: and r8d, 0xffffff
+0x138710bce: mov qword ptr [rsp + 0x20], r9
+0x138710bd3: cmp byte ptr [rip + 0x10d3589], 2     ; グローバルフラグ判定
+0x138710bda: mov r9, r10
+0x138710bdd: mov rax, qword ptr [rcx]         ; 新rcx（=self+0x8の値）のvtableロード
+0x138710be0: cmove r8d, dword ptr [rip + 0x10d357c]
+0x138710be8: call qword ptr [rax + 0x78]      ; ★同じ+0x78スロットへ再度dispatch
+0x138710beb: mov rax, rbx
+0x138710bee: add rsp, 0x30
+0x138710bf2: pop rbx
+0x138710bf3: ret
+```
+
+### 87.3 発見: これは単純なvtable実装ではなく委譲（delegation）パターン
+
+**CONFIRMED（capstone逆アセンブルによる直接観測）**:
+このRVA `0x710BB0`（`GetAnalogActionData`のvtable slot
+`+0x78`が指す実体）は、実際のデータ処理ロジックそのもの
+ではなく、**渡された`self`（RCX）をそのまま使わず、
+`[self + 0x8]`という値を新たな`self`として読み直し、
+その新self（`[self+0x8]`）のvtableの**同じ`+0x78`スロット**を
+再度呼び出す、という委譲（delegation/forwarding）実装**で
+あることが判明した。
+
+すなわち、これまで`managedSelfCandidate`/`flatSelf`として
+扱ってきたポインタは、実は**薄いプロキシ/ラッパー
+オブジェクト**であり、実際のcontroller/session固有の動的状態
+を保持している可能性が高い「真の内部オブジェクト」は、
+**`[self + 0x8]`**（外側のselfから1回`+0x8`をたどった先の
+ポインタ）である可能性が高い。
+
+途中に現れる3箇所のグローバル変数参照
+（`[rip+0x10d359c]`・`[rip+0x10d3589]`・`[rip+0x10d357c]`）は、
+`cmp`/`cmove`による条件付き値選択パターンであり、
+Steam APIの内部バージョン/feature-flag分岐と推測される
+（HYPOTHESIS、シンボルによる裏付けなし）。これは`self`の
+種類に関わらず共通のグローバル状態であるため、
+`managedSelfCandidate`と`flatSelf`の差分要因ではないと考えられる
+（両呼び出し経路が同一グローバルアドレスを参照するため）。
+
+### 87.4 次段: Phase B（`[self+0x8]`のread-only比較）
+
+87.3節で特定した`+0x8`は、**capstone逆アセンブルにより実際に
+self-relative fieldとして参照されていることがCONFIRMEDされた
+唯一のoffset**である（推測ではなく、実行経路上のマシンコード
+から直接確認済み）。次段Phase Bとして、以下をread-onlyで
+比較することを提案する（本節では未実装）:
+
+```
+managedInner = *(managedSelfCandidate + 0x8)
+flatInner    = *(flatSelf + 0x8)
+```
+
+両者が異なれば、「`managedSelfCandidate`と`flatSelf`という
+外側のラッパーは同一vtable（83章のCase V1）を持つが、
+その内部で実際にcontroller動的状態を保持する真のオブジェクト
+（`[self+0x8]`）は別インスタンスである」という、より深い
+階層でのCase I1相当の結果が得られる可能性が高い。
+
+さらに、`managedInner`/`flatInner`それぞれのvtable
+（`*(managedInner)`・`*(flatInner)`）を読み、82章と同様の
+slot比較（`+0x78`等）を行えば、この内部オブジェクトの実装が
+同一かどうかも確認できる。ただし、`[self+0x8]`の先の
+vtable構造（オフセット`+0x78`が同じ意味を持つとは限らない）
+は本節時点で未確認であり、次段の静的解析（`[self+0x8]`先の
+vtable実装を同様にcapstoneで追う）と組み合わせて慎重に
+進める必要がある。
+
+### 87.5 追加確認: 他3関数すべてで同一の`[self+0x8]`委譲パターンを確認
+
+87.3節の発見が単一関数の偶然ではないことを確認するため、
+残る3スロットの実装（`GetActionSetHandle` RVA `0x710AF0`、
+`GetCurrentActionSet` RVA `0x710D90`、
+`GetConnectedControllers` RVA `0x710D20`）もread-onlyで
+逆アセンブルした。
+
+```
+GetActionSetHandle冒頭:
+  mov rsi, rcx
+  mov rdi, rdx
+  mov rcx, qword ptr [rcx + 8]      ; ★同じ+0x8委譲
+  mov rax, qword ptr [rcx]
+  call qword ptr [rax + 0x140]
+  ...
+  mov rcx, qword ptr [rsi + 8]      ; ★本命呼び出しでも同じ+0x8
+  ...
+  call qword ptr [r9 + 0x148]
+
+GetCurrentActionSet冒頭:
+  mov rcx, qword ptr [rcx + 8]      ; ★同じ+0x8委譲
+  mov rax, qword ptr [rcx]
+  jmp qword ptr [rax + 0x88]        （別の短絡経路も存在、後続に
+                                       同じ+0x8委譲を伴う本実装あり）
+
+GetConnectedControllers冒頭:
+  mov rcx, qword ptr [rcx + 8]      ; ★同じ+0x8委譲
+  ...
+  jmp qword ptr [rax + 0x60]        （後続に同じ+0x8委譲を伴う
+                                       本実装あり）
+```
+
+**CONFIRMED**: 検証した4つの関数実装すべて
+（`GetAnalogActionData`・`GetActionSetHandle`・
+`GetCurrentActionSet`・`GetConnectedControllers`）が、
+冒頭で例外なく`mov rcx, [rcx+8]`という同一パターンを用いて
+「渡された`self`」を「内部の真のオブジェクト」へ委譲している。
+これは単一関数固有の実装ではなく、この4API全体に共通する
+一貫した設計であることを、複数の独立した関数実装から
+直接確認した。
+
+**CONFIRMED（強化）**: `+0x8`は、`managedSelfCandidate`・
+`flatSelf`という「外側のラッパーオブジェクト」から、
+実際にcontroller/session固有の動的状態を保持している
+可能性が高い「真の内部オブジェクト」を得るための、
+self-relative fieldとして、4つの独立したAPI実装すべてから
+一貫してCONFIRMEDされた。
+
+なお`GetActionSetHandle`のみ、`[rsi+0x10]`という別の
+self-relative field（`rsi`は元のself）と、`[rax+0x140]`・
+`[rax+0x28]`という追加のvtable呼び出しを経由する、より複雑な
+制御フロー（キャッシュ機構の可能性、HYPOTHESIS）を持つ。
+これが69章で観測した「名前解決系APIはmanaged/flat両selfで
+一致する」という結果と関係するかどうかは、本節時点では
+UNRESOLVEDとする。
+
+本節は静的解析のみであり、実装・ビルド・デプロイは行って
+いない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 88. Phase B: `Root26InnerObjectIdentityProbe`実装・ビルド・デプロイ（2026-09-08）
+
+### 88.1 目的と設計
+
+87章で4API共通にCONFIRMEDされた唯一のouter-self-relative
+offset（`+0x8`）について、runtime read-only比較を実装した。
+`src/Root26InnerObjectIdentityProbe.cs`を新規実装した。
+
+比較対象は3層のみに限定した:
+
+```
+outer self       : managedOuter（=managedSelfCandidate）
+                    vs flatOuter（=flatSelf）
+inner pointer     : managedInner = *(managedOuter + 0x8)
+                    vs flatInner = *(flatOuter + 0x8)
+inner vtable      : managedInnerVtable = *(managedInner)
+                    vs flatInnerVtable = *(flatInner)
+                    （managedInner・flatInnerが両方非ゼロの
+                    場合のみ実行）
+```
+
+ユーザー指示通り、**inner vtableのslot（`+0x78`等）はまだ
+読まない**。87章でCONFIRMEDされたのは「outer wrapper側が
+`[self+0x8]`経由でinner vtableの`+0x78`を呼ぶ」という事実の
+みであり、inner vtable自体のslot構成（`+0x78`が同じ意味を
+持つとは限らない）は未確認のため、本節では純粋にポインタ値の
+一致・不一致のみを3層に分けて観測する設計とした。
+
+各アドレスについて、`Process.Modules`（read-only、既存probe
+群と同じ機構）でどのモジュール範囲に属するかを確認し、
+どのモジュールにも属さない場合は意味を推測せず
+`heap/unknown`とだけ表示するようにした。
+
+`Root26ManagedSelfTraceProbe`が`managedSelfCandidate`/
+`flatSelf`を非ゼロで確定した直後、`Root26VtableIdentityProbe
+.Compare(...)`の直後に`Root26InnerObjectIdentityProbe
+.Compare(...)`を呼び出す形にした（既存2つのprobeと同じ
+「後続分析ステップ」の位置づけで、`ModMain.OnUpdate()`への
+新規独立登録は不要）。
+
+安全性: `Marshal.ReadIntPtr`のみ使用、`Marshal.Write*`不使用、
+新規Steam API呼び出しなし（両selfは呼び出し元から受け取る
+のみ）、function pointerは一切呼び出さない、native detour/
+patch/injection/hookは行っていない。
+
+### 88.2 ビルド・デプロイ・ハッシュ確認
+
+`ModMain.cs`の`Root26Phase4NativeRecoveryPoc.Sample()`・
+`Root26Phase8OverlayToStoreOpenPoc.Sample()`の2行がコメント
+アウトされたままであることをビルド前に再確認した。
+
+`dotnet build -c Release -v q`は0警告・0エラーで成功した。
+ビルド成果物を
+`C:\Program Files (x86)\Steam\steamapps\common\smt3hd\Mods\
+NocturneModernController.dll`へデプロイし、
+ソース側・デプロイ先のSHA-256が完全一致することを確認した
+（`24230e1e0b9ff85c4f532422e28d804ee7de2c138232460e23d542ed820683b3`）。
+
+本節時点でGit commit/pushは行っていない。次に必要なのは、
+これまでと同様の最小実機テスト（通常起動→数秒待機→終了、
+Guide・RSTICK操作いずれも不要）による、
+`Root26InnerObjectIdentity`ログの`sameOuter`/`sameInner`/
+`sameInnerVtable`の観測である。
+
+判定基準（ユーザー提示、そのまま採用）:
+
+```
+Case B1: outer different / inner different / inner vtable same
+→ 「同じ内部実装の別inner instance」が強く支持される。
+  85章の動的状態差の原因候補として最も自然。
+
+Case B2: outer different / inner same
+→ outer wrapper差だけでは85章の結果を説明しにくくなる。
+  次はouter側の追加field/global条件を追う。
+
+Case B3: inner different / inner vtable different
+→ inner実装自体も異なる可能性。
+```
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 89. 実機テスト結果: Case B1確定 — inner objectは別インスタンス（いずれもheap上）、inner vtableは完全一致（2026-09-08 14:30台）
+
+### 89.1 テスト結果
+
+これまでと同様の最小テスト（通常起動→数秒待機→終了、
+Guide・RSTICK操作いずれも不要）を実施した。
+
+```
+managedOuter=0x2A2AE7307A0 flatOuter=0x2A2AED00840 sameOuter=False
+managedInner=0x2A2AE740450[heap/unknown] flatInner=0x2A415CC0D50[heap/unknown] sameInner=False
+
+managedInnerVtable=0x7FF8E2A1EE70[steamclient64.dll rva=0x12AEE70]
+flatInnerVtable=0x7FF8E2A1EE70[steamclient64.dll rva=0x12AEE70]
+sameInnerVtable=True
+```
+
+**CONFIRMED**: `managedInner`と`flatInner`は、いずれも
+既知のロード済みモジュール（`steam_api64.dll`・
+`steamclient64.dll`・`GameAssembly.dll`等）のアドレス範囲に
+属さない（`heap/unknown`）、すなわち**動的確保されたヒープ
+オブジェクトである可能性が高いアドレス**であり、かつ両者の
+値は明確に異なる。一方、`managedInnerVtable`と
+`flatInnerVtable`は**完全に同一のアドレス**
+（`steamclient64.dll`内RVA `0x12AEE70`）である。
+
+### 89.2 判定: Case B1確定
+
+ユーザー提示の判定基準における**Case B1**
+（`outer different / inner different / inner vtable same`）が
+成立した。
+
+**CONFIRMED**: `managedSelfCandidate`（managed binding経路）と
+`flatSelf`（`SteamAPI_SteamInput_v002()`）は、
+「同じ実装のouterラッパー（83章のCase V1）」→
+「`[self+0x8]`経由で別々のヒープ上innerオブジェクトを指す
+（本節）」→「そのinnerオブジェクトは同じvtable
+（同じクラス実装）を共有する」という、3階層すべてにおいて
+整合的な構図であることがCONFIRMEDされた。
+
+これにより、85章の動的状態不一致（`GetAnalogActionData`が
+managedSelfでは実データ、flatSelfでは常にゼロ）の原因は、
+
+> **同一クラス（同一vtable）の、異なる2つのインスタンス
+> （outer wrapperとその先のinner object、両階層とも別インスタンス）
+> が、それぞれ独立したcontroller/session動的状態を保持しており、
+> `SteamAPI_SteamInput_v002()`が返す方のインスタンスは、
+> ゲーム本体（managed binding）が実際に使用しているコントローラ
+> データを反映していない（別セッション/別スコープの
+> インスタンスである）**
+
+という説明で、これまでで最も整合的に説明できることが強く
+支持された。
+
+### 89.3 次段（Chapter90予告、未実装）
+
+inner vtableの`+0x78`実装（87章でCONFIRMEDした、outer側から
+呼ばれるslot）を静的に追い、innerオブジェクトのどのfieldが
+controller/session/handle等の動的状態と直接関係するかを
+特定するのが次段の課題である。これは次章でユーザーと合意の
+上、静的解析（capstone/Ghidra、read-only）として進める。
+本節では実装していない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 90. Phase A: inner側`GetAnalogActionData`実装の静的解析 — `[inner+0x109708]`がinputHandle一致判定に使われることをCONFIRMED（2026-09-08）
+
+### 90.1 inner vtable+0x78の関数RVAを推測なしで確定
+
+89章でCONFIRMEDした`managedInnerVtable == flatInnerVtable`
+（`steamclient64.dll` RVA `0x12AEE70`）を起点に、ディスク上の
+`steamclient64.dll`（`pefile`、read-only）から
+`*(innerVtable + 0x78)`の生バイト値を直接読み取った:
+
+```
+innerVtable+0x78のraw 8byte値 = VA 0x1385EDE10
+→ RVA = 0x5EDE10（ImageBase 0x138000000との差分、推測なし）
+```
+
+### 90.2 inner側`GetAnalogActionData`実装の完全逆アセンブル
+
+RVA `0x5EDE10`から`ret`到達までread-onlyでcapstone
+逆アセンブルした（ファイルの実行・改変・注入・フックは一切
+行っていない）。全命令列は長大なため、以下に発見した
+self-relative offsetの要点のみ記す（生の命令列は本セッションの
+作業ログに保持）。
+
+呼び出し規約（プロローグから確認）: `RCX=inner self（RDI）`・
+`RDX=戻り値バッファ（RSI）`・`R8=inputHandle`（下位32bitのみ
+`R14D`として使用）・`R9=analogActionHandle`（`RBP`）。これは
+87章でCONFIRMED済みの outer側呼び出し規約
+（`self, inputHandle, analogActionHandle`、hidden retptr経由）
+と完全に一致する。
+
+**CONFIRMED（capstone直接観測、以下すべてinner selfからの
+相対offset）**:
+
+```
++0x1c0    : 関数冒頭・末尾で他関数呼び出しの引数として使われる
+            （ロック/クリティカルセクション相当と推測、
+            HYPOTHESIS）
++0x109708 : 4byte値。渡されたinputHandleの下位32bit（R14D）と
+            `cmp r14d, [rdi+0x109708]`で比較され、
+            **不一致なら即座に戻り値ゼロのままreturn**する。
++0x10970d : analogActionHandleを線形探索するテーブルの先頭。
+            各エントリ`0x3f6`byte、最大16エントリ
+            （`imul rax,rdx,0x3f6`; `cmp [rax+rdi+0x10970d],
+            rbp`を最大16回ループ）。一致するエントリの
+            インデックス（`ecx`、0〜15）を得る。
++0x1097a2 : （インデックス依存の別テーブル経由）4byte、
+            戻り値の先頭4byte（eMode相当）
++0x1097a6 : 4byte、戻り値+4（x相当）
+            （+0x1097a2と+0x1097a6はmovsd 1命令で8byte
+            まとめてコピーされる。訂正: 当初この8byte塊を
+            「x/y」と誤記したが、後述90.2.1節の追加確認により
+            前半4byte=eMode・後半4byte=xであることを訂正済み）
++0x1097aa : 4byte、戻り値+8（y相当）
+            （訂正: 当初「eMode相当」と誤記していたが、
+            90.2.1節の追加確認により実際はyであることを訂正済み）
++0x1097ae : 1byte、戻り値+0xc（bActive相当）かつ、この値が
+            ゼロなら早期return（アクティブフラグとしての
+            用途を兼ねると推測、HYPOTHESIS）
+```
+
+### 90.2.1 訂正: 戻り値field順序の誤記を修正（ユーザー指摘）
+
+ユーザーより、上記の当初記述
+（`+0x1097a2→[rsi]`8byte=x/y、`+0x1097aa→[rsi+8]`4byte=
+eMode）が、85章でbit-exact CONFIRMED済みの
+`eMode@0x0,x@0x4,y@0x8,bActive@0xc`という並びと食い違うとの
+指摘を受けた。指摘は正しく、以下の通り訂正する。
+
+同じ関数の後続命令列を再確認したところ、2つの独立した
+裏付けが得られた:
+
+```
+0x1385ededb: mov eax, dword ptr [r8 + rdi + 0x1097a2]  ; 先頭4byteを単独で再読込
+0x1385edee3: cmp eax, 0x1d                               ; 0～0x1dの範囲チェック
+0x1385edee8: mov ecx, 0x3e420090
+0x1385edeed: bt ecx, eax                                 ; ビットテーブルによる値検証
+```
+
+`[+0x1097a2]`の**先頭4byteだけ**を単独で読み直し、
+`cmp eax, 0x1d`（0〜29の範囲チェック）＋ビットテーブル検証を
+行っている。これは列挙型（`eMode`、`EInputSourceMode`）に
+対する妥当性チェックそのものであり、`[+0x1097a2]`の先頭4byte
+が**eMode**であることを直接裏付ける。
+
+```
+0x1385edf0c: movss xmm0, dword ptr [rsi + 4]
+0x1385edf11: movss xmm1, dword ptr [rsi + 8]
+...
+0x1385edf1a: subss xmm0, dword ptr [rax + rdi + 0x116924]
+0x1385edf23: subss xmm1, dword ptr [rax + rdi + 0x116928]
+0x1385edf2c: movss dword ptr [rsi + 4], xmm0
+0x1385edf31: movss dword ptr [rsi + 8], xmm1
+```
+
+さらに後続で、`[rsi+4]`と`[rsi+8]`をそれぞれ**独立した
+単精度float値**として読み書きし、relative mode用の差分計算
+（前回値との減算）を行っている。これは`[rsi+4]`・`[rsi+8]`
+が、それぞれ独立したx座標・y座標のfloat値であることを直接
+裏付ける。
+
+**CONFIRMED（訂正後、machine code直接観測+85章のbit-exact
+runtime結果との整合確認）**: 正しい対応は
+
+```
++0x1097a2（4byte、movsdの前半）→ [rsi+0x0]  = eMode
++0x1097a6（4byte、movsdの後半、+0x1097a2+4）→ [rsi+0x4] = x
++0x1097aa（4byte）              → [rsi+0x8] = y
++0x1097ae（1byte）              → [rsi+0xc] = bActive
+```
+
+であり、これは85章でCONFIRMED済みの
+`eMode@0x0,x@0x4,y@0x8,bActive@0xc`と完全に一致する。
+当初のchapter90本文の誤記（8byte塊を丸ごと「x/y」、
+`+0x1097aa`を「eMode」とした記述）はここに訂正する。
+`+0x109708`（inputHandle一致判定）・`+0x10970d`
+（analogActionHandle検索テーブル）に関するCONFIRMEDには
+影響しない。
+
+### 90.3 最重要発見: `[inner+0x109708]`がinputHandle不一致による早期ゼロ返却の直接原因候補
+
+**CONFIRMED（machine code直接観測）**: この関数は、渡された
+`inputHandle`の下位32bitが`[inner+0x109708]`に格納された値と
+一致しない場合、以降の全ロジック（analogActionHandle検索・
+データコピー）を一切実行せず、90.2節冒頭で戻り値バッファを
+ゼロクリアした状態のまま`return`する。
+
+**HYPOTHESIS（意味解釈、シンボルによる裏付けなし）**:
+`[inner+0x109708]`は、この特定のinner
+instanceが「担当する」単一のcontroller/inputHandleを保持する
+フィールドである可能性が高い。すなわち、Steam Input側では
+controllerごとに個別のinner instance（内部管理オブジェクト）
+が存在し、`GetAnalogActionData`はまず「渡されたinputHandleが
+このinstanceの担当handleと一致するか」を検査してから
+処理を進める、という設計になっていると考えられる。
+
+これが正しければ、85章で観測した「`flatSelf`経由では常に
+ゼロが返る」という現象は、**`flatInner`
+（`SteamAPI_SteamInput_v002()`が返すouterの先にあるinner
+object）の`[+0x109708]`に格納された値が、テストで使用した
+inputHandle（`91728467815138660`等）と一致していないため**、
+という具体的な機構でほぼ説明できる。
+
+### 90.4 判定と次段（Phase B、未実装）
+
+本節はcapstoneによる静的解析のみであり、実装・ビルド・
+デプロイ・runtime probeは一切行っていない。次段として、
+以下のread-only比較をPhase Bとして提案する（ユーザー合意後に
+実装）:
+
+```
+managedInnerInputHandle = *(uint32)(managedInner + 0x109708)
+flatInnerInputHandle    = *(uint32)(flatInner + 0x109708)
+```
+
+これを、その時点でテスト対象としているcontroller
+（`pad.Controller.Keys`）の実際のinputHandle値（の下位32bit）
+と突き合わせれば、「`flatInner`が担当するhandleが、
+ゲームが実際に使っているcontrollerのhandleと一致しているか」
+を直接検証できる。もし`managedInnerInputHandle`が実際の
+controller handleと一致し、`flatInnerInputHandle`が一致しない
+（または明らかに異なる値・ゼロ）であれば、90.3節のHYPOTHESIS
+はCONFIRMED方向へ大きく前進する。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 91. Phase B: `Root26StoredHandleCompareProbe`実装・ビルド・デプロイ（2026-09-08）
+
+### 91.1 目的と重要な制約（ユーザー指摘の反映）
+
+90.3節でCONFIRMEDした`[inner+0x109708]`のinputHandle一致判定
+について、runtime read-only比較を実装した。
+`src/Root26StoredHandleCompareProbe.cs`を新規実装した。
+
+比較対象:
+
+```
+managedStored = *(uint32*)(managedInner + 0x109708)
+flatStored    = *(uint32*)(flatInner    + 0x109708)
+```
+
+（`managedInner`/`flatInner`は87/88章でCONFIRMED済みの
+`*(outer + 0x8)`から改めて算出）。これを、その時点で
+`pad.Controller.Keys`から動的取得した各controller handleの
+**下位32bit**と突き合わせる。
+
+**重要な制約（ユーザー指摘、そのまま採用）**: 本調査で確認済みの
+2つのcontroller handle
+（`0x0045EB0033E98564`＝Xbox Elite 2側、
+`0x0145E28E33E98564`＝Xbox 360互換側）は、**下位32bitが
+両方とも`0x33E98564`で同一**である。したがって、本probeの
+比較は「`stored`値が**いずれかの**handleの下位32bitと一致するか
+否か」のみをCONFIRMEDでき、2つの物理インターフェースの
+どちらに対応するinner instanceかを識別することはできない。
+この限界はログにも明記した。
+
+### 91.2 実装
+
+- `managedInner`/`flatInner`の算出は88章と同じ
+  `*(outer+0x8)`（`Marshal.ReadIntPtr`）を再利用。
+- `Marshal.ReadInt32`で`inner+0x109708`の4byte値を読み、
+  `uint`として比較（`Marshal.Write*`は一切使用していない）。
+- `pad.Controller.Keys`（既存probe群と同じ動的取得、
+  ハードコードなし）から得た各controller handleについて、
+  下位32bit（`handleRaw & 0xFFFFFFFF`）と`managedStored`/
+  `flatStored`をそれぞれ突き合わせ、一致可否をログする。
+- 新規Steam API呼び出しは行っていない（両outer selfは
+  呼び出し元`Root26ManagedSelfTraceProbe`から受け取るのみ、
+  `pad.Controller`は既存managed stateへのアクセス）。
+  function pointerは一切呼び出していない。
+- `Root26ManagedSelfTraceProbe`の
+  `Root26InnerObjectIdentityProbe.Compare(...)`の直後に
+  `Root26StoredHandleCompareProbe.Compare(...)`を追加した。
+
+### 91.3 ビルド・デプロイ・ハッシュ確認
+
+`ModMain.cs`の`Root26Phase4NativeRecoveryPoc.Sample()`・
+`Root26Phase8OverlayToStoreOpenPoc.Sample()`の2行がコメント
+アウトされたままであることをビルド前に再確認した。
+
+`dotnet build -c Release -v q`は0警告・0エラーで成功した。
+ビルド成果物を
+`C:\Program Files (x86)\Steam\steamapps\common\smt3hd\Mods\
+NocturneModernController.dll`へデプロイし、
+ソース側・デプロイ先のSHA-256が完全一致することを確認した
+（`e94a786a5c79910b5540975c5dfabb21709e96135d38a9918cd41de30b0a0f1b`）。
+
+本節時点でGit commit/pushは行っていない。次に必要なのは、
+これまでと同様の最小実機テスト（通常起動→数秒待機→終了、
+Guide・RSTICK操作いずれも不要）による、
+`Root26StoredHandleCompare`ログの`managedStored`/`flatStored`
+と各handleの`low32`一致状況の観測である。
+
+判定基準（ユーザー提示、そのまま採用）:
+
+```
+C1: managedStored == inputHandleLow32 / flatStored != inputHandleLow32
+→ flat経路のゼロ返却を、この冒頭cmpで直接説明できる。
+
+C2: managedStored == inputHandleLow32 / flatStored == inputHandleLow32
+→ handle gateは両者通過するため、次はaction table/active・data側の
+  差を追う。
+
+C3: managedStored != inputHandleLow32
+→ 90章の引数対応またはoffset解釈を再検証。先へ進まない。
+```
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 92. 実機テスト結果: タイミング問題によりINCONCLUSIVE — `SteamInputUtil.instance`初期化前に実行されていた（2026-09-08 14:52台）
+
+### 92.1 テスト結果
+
+```
+[14:52:24.982] Root26ManagedSelfTrace RESOLVED managedSelfCandidate=... flatSelf=...
+[14:52:25.696] Root26InnerObjectIdentity managedInner=0x1964B710B50 flatInner=0x1958B440C50 sameInner=False
+[14:52:25.838] Root26InnerObjectIdentity managedInnerVtable=flatInnerVtable（一致）
+[14:52:25.843] Root26StoredHandleCompare managedStored=0x00000000 flatStored=0x00000000
+[14:52:25.843] Root26StoredHandleCompare SteamInputUtil.instance is null - cannot compare against a live inputHandle
+[14:52:28.438] Root26SteamState STATE-CHANGE SteamInputUtil.instance null -> non-null
+```
+
+**CONFIRMED（問題の特定）**: `Root26StoredHandleCompareProbe
+.Compare(...)`が実行された時点（14:52:25.843）では、
+`SteamInputUtil.instance`はまだ`null`であり、実際に非null
+となったのは**約2.6秒後**（14:52:28.438）だった。
+
+`Root26ManagedSelfTraceProbe`（80章の設計）は
+`managedSelfCandidate`/`flatSelf`のチェーンが解決した時点で
+一度きり実行され、以後同一セッション中は再実行されない。
+その一度きりの実行タイミングに相乗りしていた
+`Root26StoredHandleCompareProbe`も、`SteamInputUtil.instance`
+の初期化タイミングとは無関係に、chainの解決タイミング
+（本セッションでは非常に早く、探索状態に入る前）で実行されて
+しまった。
+
+**判定**: `managedStored=0`・`flatStored=0`という結果は、
+`+0x109708`が「まだcontrollerがこのinner instanceに紐づけ
+られる前の初期状態（未設定でゼロ）」であった可能性が高く、
+C1/C2/C3のいずれの判定材料にもならない**INCONCLUSIVE**として
+扱う。`managedInner`/`flatInner`自体は前回同様正常に解決されて
+おり（`Root26InnerObjectIdentityProbe`は正常動作、
+`sameInnerVtable=True`も再現）、87〜90章のCONFIRMED事項には
+影響しない。
+
+### 92.2 対処方針（次章で実装、本節では未実装）
+
+`Root26StoredHandleCompareProbe`を、`Root26ManagedSelfTraceProbe`
+の一度きりの実行に相乗りする現在の設計から、**独立して
+`ModMain.OnUpdate()`から毎フレーム呼ばれ、`SteamInputUtil
+.instance`および`pad.Controller.Keys`に実際のcontroller handle
+が存在することを確認できるまで自前でリトライする**設計へ
+変更する。outer self（`managedSelfCandidate`/`flatSelf`）の
+再取得は、84章の`Root26AnalogDataSelfSwapProbe`と同じ
+「毎フレーム軽量に再チェーンする」パターンを踏襲する。
+
+本節では実装していない。次章でユーザー合意の上、実装・
+ビルド・デプロイまで進める。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 93. `Root26StoredHandleCompareProbe`を独立リトライ型へ再設計・実装・ビルド・デプロイ（2026-09-08）
+
+### 93.1 設計変更
+
+92章の指摘に基づき、`Root26StoredHandleCompareProbe`を
+`Root26ManagedSelfTraceProbe`の一度きりの実行への相乗りから、
+**`ModMain.OnUpdate()`から独立して毎フレーム呼ばれ、自前で
+リトライする設計**へ全面的に書き換えた。
+
+判定開始条件（すべて満たすまでリトライ、状態変更は一切
+発生しない）:
+
+```
+SteamInputUtil.instance != null
+pad != null
+pad.Controller.Keys に1個以上の非zero controller handleがある
+managedSelfCandidate（毎フレーム自前で再チェーン、84章と同じ
+  read-onlyパターン）が非zero
+flatSelf（SteamAPI_SteamInput_v002()）が非zero
+managedInner = *(managedSelfCandidate+0x8) が非zero
+flatInner    = *(flatSelf+0x8) が非zero
+```
+
+いずれかが未成立の間は`_done=true`にせず、次フレームで再試行
+する。待機中のログは最大3秒間隔（`WaitLogIntervalMs`）に
+抑制した。最大15秒（`RetryTimeoutMs`）経過しても条件が
+成立しない場合は、`INCONCLUSIVE timeout`を1回だけ出力して
+probeを終了する。
+
+**重要**: `managedStored=0`/`flatStored=0`という値そのものは
+timeout判定の材料にしない（92章の教訓を反映）。上記の
+前提条件がすべて満たされたフレームでのみ`+0x109708`を読み、
+その1回の結果だけをC1/C2/C3判定に使う。
+
+`managedSelfCandidate`の再チェーンロジック（`GameAssembly.dll`
+のモジュールベース取得→`+0x2E4F3E0`→`+0xB8`→`+0xB0`）は、
+84章の`Root26AnalogDataSelfSwapProbe`と全く同じread-only
+パターンを踏襲した。
+
+`ModMain.cs`から`Root26ManagedSelfTraceProbe.Compare(...)`
+経由の旧呼び出しを削除し、代わりに
+`Root26AnalogDataSelfSwapProbe.Sample();`の直後に
+`Root26StoredHandleCompareProbe.Sample();`を独立登録した。
+
+安全性は従来通り: `Marshal.ReadIntPtr`/`Marshal.ReadInt32`の
+みを使用、`Marshal.Write*`不使用、新規Steam API呼び出しなし
+（`SteamAPI_SteamInput_v002()`は64章以来使用してきた既存の
+副作用なしaccessor）、function pointerは一切呼び出さない、
+native detour/patch/injection/hookは行っていない。
+
+### 93.2 ビルド・デプロイ・ハッシュ確認
+
+`ModMain.cs`の`Root26Phase4NativeRecoveryPoc.Sample()`・
+`Root26Phase8OverlayToStoreOpenPoc.Sample()`の2行がコメント
+アウトされたままであることをビルド前に再確認した。
+
+`dotnet build -c Release -v q`は0警告・0エラーで成功した。
+ビルド成果物を
+`C:\Program Files (x86)\Steam\steamapps\common\smt3hd\Mods\
+NocturneModernController.dll`へデプロイし、
+ソース側・デプロイ先のSHA-256が完全一致することを確認した
+（`5fb3c5374ffc051a40576eec4422c2f2984b0f8269aaceab798fd73705a3f725`）。
+
+本節時点でGit commit/pushは行っていない。次に必要なのは、
+やや長め（起動→5〜10秒程度待機→終了、Guide・RSTICK操作
+いずれも不要）の実機テストによる、`Root26StoredHandleCompare`
+の`RESOLVED`ログと各handleの`managedMatches`/`flatMatches`の
+観測である。
+
+判定基準（91章と同じ、そのまま維持）:
+
+```
+C1: managedStored == inputHandleLow32 / flatStored != inputHandleLow32
+→ flat経路のゼロ返却を、この冒頭cmpで直接説明できる。
+
+C2: managedStored == inputHandleLow32 / flatStored == inputHandleLow32
+→ handle gateは両者通過するため、次はaction table/active・data側の
+  差を追う。
+
+C3: managedStored != inputHandleLow32
+→ 90章の引数対応またはoffset解釈を再検証。先へ進まない。
+```
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 94. 実機テスト結果: C3該当 — `managedStored`は非ゼロだが実際のhandle low32とは不一致（2026-09-08 15:15台）
+
+### 94.1 テスト結果
+
+`Root26StoredHandleCompareProbe`は今回、条件成立まで
+2回のWAITINGを経て（`SteamInputUtil.instance`待ち→
+`pad.Controller`の非zero handle待ち）、`RESOLVED`に到達した。
+
+```
+[15:15:14.273] WAITING SteamInputUtil.instance still null
+[15:15:17.261] WAITING pad.Controller has no non-zero handle yet
+[15:15:18.966] RESOLVED managedSelfCandidate=0x1D1EBC007A0 flatSelf=0x1D1EC1D0840
+               managedInner=0x1D1EBC10010 flatInner=0x1D3128E0650
+               managedStored=0x00159168 flatStored=0x00000000
+
+handle=19680159496504676 low32=0x33E98564 managedStored==low32:False flatStored==low32:False
+handle=91728467815138660 low32=0x33E98564 managedStored==low32:False flatStored==low32:False
+```
+
+**CONFIRMED**: `managedStored=0x00159168`は**非ゼロ**の値
+だったが、実際のcontroller handleの下位32bit
+（`0x33E98564`、両controllerとも共通）とは**一致しない**。
+`flatStored`は今回も`0x00000000`のままだった。
+
+### 94.2 判定: C3該当（ただしタイミングの再考が必要）
+
+ユーザー提示の判定基準における**C3**
+（`managedStored != inputHandleLow32`）に該当する。
+これは「90章の`+0x109708`のoffset解釈または引数対応を
+再検証すべき」状況であり、C1/C2への到達条件を満たさない。
+
+ただし、断定する前に以下のタイミング上の懸念を記録する:
+`RESOLVED`到達時刻（15:15:18.966）は、`pad.Controller`に
+非zero handleが現れた直後（15:15:17.261のWAITING直後）で
+あり、**93章のリトライ条件（`SteamInputUtil.instance`・
+`pad.Controller`の非zero handle・`managedSelfCandidate`/
+`flatSelf`/inner双方が非zero）はすべて満たしていたが、
+`pad.Controller`にhandleが登録されてから`GetAnalogActionData`
+が実際に呼ばれるまでの間に、Steam Input側の
+`[inner+0x109708]`がまだ「本当に紐づくべきinputHandle」で
+更新されていない、より遅い初期化タイミングが別途存在する
+可能性**を排除できていない。`managedStored=0x00159168`という
+中途半端に小さい非ゼロ値は、実際のhandle値ではなく、
+何らかの内部シーケンス番号・仮のslot値である可能性も
+HYPOTHESISとして残る。
+
+**判定（保留付きC3）**: 本節時点ではC3として記録するが、
+「`+0x109708`の意味解釈自体が誤り」なのか、「単に
+リトライ条件に`+0x109708`自体の有効性チェックが
+含まれていなかったための時期尚早な観測」なのかは、
+断定せずUNRESOLVEDとする。次段の方針（RSTICKを実際に動かした
+LIVE状態まで待ってから再測定する、あるいは90章のoffset解釈を
+静的に再検証する等）はユーザーと合意の上で決定する。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 95. Chapter87/90のouter→inner calling convention再検証 — `[inner+0x109708]`はinputHandleではなくglobal由来値との比較であることが判明、Chapter90の意味解釈を訂正（2026-09-08）
+
+### 95.1 再検証の動機
+
+94章のC3（`managedStored`が非ゼロだが実際のcontroller handle
+のlow32と不一致）を受け、ユーザーより「タイミング問題より先に
+Chapter90の引数対応の誤りを疑うべき」との指摘を受けた。
+87章で既に得ていたouter wrapperの命令列
+（`mov r8d,[global]; mov [rsp+0x20],r9; mov r9,r10; call
+[rax+0x78]`）を素直に読むと、outer→inner呼び出しで引数の
+並べ替えが起きている可能性が高く、90章のinner側解釈
+（`r14d=inputHandle`・`rbp=analogActionHandle`）を前提から
+再検証する必要があると判断した。
+
+### 95.2 outer側（RVA `0x710BB0`）の完全なデータフロー追跡
+
+ディスク上の`steamclient64.dll`をread-onlyで再度capstone
+逆アセンブルし、RIP相対グローバル参照の正確なRVAも算出した
+（推測なし、`pefile`で直接算出）:
+
+```
+0x138710bb0: push rbx
+0x138710bb2: sub rsp, 0x30
+0x138710bb6: mov rcx, qword ptr [rcx + 8]        ; RCX -> inner self
+0x138710bba: mov r10, r8                          ; R10 = 元R8(=inputHandle)を退避
+0x138710bbd: mov r8d, dword ptr [rip + 0x10d359c] ; RVA 0x17E4160 の4byte値でR8dを上書き
+0x138710bc4: mov rbx, rdx                          ; RBX = 元RDX(hidden retptr)を退避
+0x138710bc7: and r8d, 0xffffff                     ; 下位24bitのみ残す
+0x138710bce: mov qword ptr [rsp + 0x20], r9        ; 元R9(=analogActionHandle)をstackへ退避
+0x138710bd3: cmp byte ptr [rip + 0x10d3589], 2     ; RVA 0x17E4163 の1byte値と2を比較
+0x138710bda: mov r9, r10                            ; R9 <- R10(=元R8=inputHandle)  ★引数入替
+0x138710bdd: mov rax, qword ptr [rcx]               ; inner selfのvtableロード
+0x138710be0: cmove r8d, dword ptr [rip + 0x10d357c] ; 条件成立時、RVA 0x17E4164の値でR8d上書き
+0x138710be8: call qword ptr [rax + 0x78]            ; inner呼び出し
+```
+
+**CONFIRMED（machine code直接観測、outer entry時点の引数を
+基準としたデータフロー）**: outer entry時点の
+`RCX=outer self, RDX=hidden retptr, R8=inputHandle,
+R9=analogActionHandle`（72.2/87章で確立済みのC++メンバ関数
+ABI）に対し、inner呼び出し時点の実際の引数は:
+
+```
+RCX（inner call） = inner self（= *(outer self + 0x8)、87章の
+                    委譲offsetと変わらず）
+RDX（inner call） = RBX = 元のRDX = hidden retptr（変更なし）
+R8（inner call）  = グローバル値A（RVA 0x17E4160由来、下位24bit
+                    マスク）、または条件成立時はグローバル値C
+                    （RVA 0x17E4164由来） ★inputHandleではない
+R9（inner call）  = R10 = 元のR8 = inputHandle ★analogAction
+                    Handleではなくinputhandleがここに来る
+[rsp+0x20]（inner call） = 元のR9 = analogActionHandle
+                    （スタック経由の第5引数相当）
+```
+
+すなわち、**90章で「inner冒頭のr14d(=R8d)がinputHandleの
+下位32bit」「rbp(=R9)がanalogActionHandle」とした解釈は
+誤りであり、実際には逆で、r14d(=R8d)はグローバル由来の値、
+rbp(=R9)がinputHandleである。**
+
+参考: 3つのグローバル参照（RVA `0x17E4160`・`0x17E4163`・
+`0x17E4164`）は連続したアドレス帯にあり、単一の小さな構造体
+（4byte値+1byteフラグ+4byte値）である可能性が高い
+（HYPOTHESIS、シンボルなし。Steam APIバージョン/feature-flag
+選択に関する内部状態と推測されるが未確認）。
+
+### 95.3 inner側（RVA `0x5EDE10`）の再解釈
+
+90章の該当箇所を、上記の訂正済みマッピングに基づき再解釈する:
+
+```
+プロローグ:
+  mov rdi, rcx     ; rdi = inner self
+  mov rbp, r9      ; rbp = R9(inner call) = inputHandle
+                     【訂正: 90章では「analogActionHandle」と誤認】
+  mov r14d, r8d    ; r14d = R8d(inner call) = グローバル由来の
+                     24bit値（またはグローバル値C）
+                     【訂正: 90章では「inputHandle低位32bit」と誤認】
+```
+
+続く妥当性チェックと検索ループ:
+
+```
+lea rax, [rbp - 1]; cmp rax, -3; ja early_exit
+  → rbp(=inputHandle、64bitの大きな値)に対する緩い妥当性
+    チェック（0や近傍の極端な値でなければ通過）。訂正後の
+    方が、巨大な64bit値に対する自然なチェックとして整合する。
+
+（最大16回ループ、各エントリ0x3f6byte、+0x10970dから）:
+  cmp qword ptr [rax+rdi+0x10970d], rbp
+  → rbp(=inputHandle)と一致するエントリを検索。
+    【訂正: 90章では「analogActionHandleの検索テーブル」と
+    誤認していたが、実際はinputHandleを検索するテーブルで
+    あり、最大16エントリという数はSteam Inputが管理する
+    controller数の上限に対応する可能性がある
+    （HYPOTHESIS、シンボルなし）】
+
+cmp r14d, [rdi+0x109708]; jne early_exit
+  → r14d(=グローバル由来の値)と[inner+0x109708]を比較。
+    【訂正: 90章では「inputHandle不一致による早期ゼロ返却」と
+    したが、この比較はinputHandleとは無関係である】
+
+mov ecx, [rsp+0x70]; dec ecx; cmp ecx, 0x17; ja early_exit
+  → inner自身のスタックフレーム上のanalogActionHandle
+    （outerが[rsp+0x20]経由で渡した値）に対する妥当性チェック
+    （1〜24の範囲）と推測される（HYPOTHESIS）。
+```
+
+### 95.4 判定: 90.3節の意味解釈を訂正、94章のC3判定を保留に格下げ
+
+**CONFIRMED（訂正）**: `[inner+0x109708]`は
+**inputHandleのゲートではない**。実際に比較されているのは、
+outer wrapperがグローバル変数（RVA `0x17E4160`、条件次第で
+`0x17E4164`）から読み取り24bitマスクした値である。この値の
+意味（Steam APIバージョン識別子、feature flag、session ID等）
+は本節時点でシンボルによる裏付けがなく、命名・断定しない。
+
+**訂正**: 90.3節の「`[inner+0x109708]`がinputHandle不一致に
+よる早期ゼロ返却の直接原因候補」というCONFIRMEDは撤回する。
+同様に、90.2節の「`+0x10970d`はanalogActionHandleを検索する
+テーブル」という記述も、「inputHandleを検索するテーブル
+（controller slot検索と推測、HYPOTHESIS）」に訂正する。
+
+**94章のC3判定の再評価**: `managedStored=0x00159168`・
+`flatStored=0x00000000`という91/93/94章の観測結果自体
+（生の数値、read-onlyで直接取得した値）は引き続きCONFIRMED
+だが、この値が「inputHandleと比較されるべき値」であるという
+前提が誤りだったため、**94章のC1/C2/C3判定はいずれも無効
+（前提から成立しない）としてUNRESOLVEDへ差し戻す**。
+`managedStored`と`flatStored`が異なる（一方は非ゼロ、
+一方はゼロ）という事実自体は、依然として「managed/flat経路で
+何らかのグローバル依存状態または内部フラグが異なる」ことを
+示唆する興味深いデータではあるが、その意味は本節時点では
+未解明である。
+
+次段の課題は、RVA `0x17E4160`/`0x17E4163`/`0x17E4164`に
+格納されているグローバル値の意味（何のフラグ/IDか）と、
+`[inner+0x109708]`が実際に何を表すフィールドなのかを、
+別の手がかり（他の呼び出し箇所での同じグローバル参照、
+文字列参照との相関等）から特定することである。本節では
+これ以上の追跡は行っていない。
+
+本節は静的解析のみであり、実装・ビルド・デプロイ・runtime
+probeは一切行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 96. writer追跡: グローバル`0x17E4160`の書き込み元を発見、`inner+0x109708`への直接write命令は0件（2026-09-08）
+
+### 96.1 手法
+
+`steamclient64.dll`の`.text`セクション全体（RVA `0x1000`〜
+`0x116C160`、約1160万byte）をcapstoneでread-only逆アセンブル
+（`skipdata=True`、521万命令超）し、以下2種類の参照を検索した:
+
+1. RVA `0x17E4160`/`0x17E4163`/`0x17E4164`への
+   RIP相対read/write参照（絶対アドレス一致）
+2. `disp == 0x109708`を持つメモリオペランド（baseレジスタは
+   問わない）を持つ全命令
+
+### 96.2 グローバル`0x17E4160`の書き込み元をCONFIRMED
+
+**CONFIRMED（capstone直接観測）**: RVA `0x17E4160`への
+真の書き込み（destinationオペランドとしての`mov`/`and`）は
+2箇所存在した:
+
+```
+RVA 0x70F9F8: mov qword ptr [rip+...], rax   （複雑な条件分岐の後）
+RVA 0x71D3DF: mov qword ptr [rip+...], rcx
+```
+
+後者（RVA `0x71D3DF`）は完結した小さな関数であり、以下の
+構造を持つ:
+
+```
+sub rsp, 0x28
+mov rcx, qword ptr [rcx + 8]      ; ★同一の[self+0x8]委譲パターン
+mov qword ptr [rsp + 0x30], 0
+mov rax, qword ptr [rcx]          ; innerのvtableロード
+call qword ptr [rax + 0x98]       ; ★別のvtable slot（+0x98）呼び出し
+and eax, 0xffffff
+mov dword ptr [rsp + 0x30], eax
+...
+mov qword ptr [rip + ...], rcx    ; グローバル0x17E4160への書き込み
+...
+ret
+```
+
+**CONFIRMED**: グローバル`0x17E4160`の値は、
+`[self+0x8]`委譲パターン（87章と同一）を経由し、inner
+オブジェクトのvtableの**別のslot（`+0x98`）**を呼び出した
+戻り値（下位24bitマスク後）から生成されている。前者
+（RVA `0x70F9F8`）も同じ`call [rax+0x98]`（直前の命令から
+確認）の結果を、より複雑なエラーコード判定
+（`0x80001388`との比較等、HRESULT風の値の可能性、HYPOTHESIS）
+を経て書き込んでいる。
+
+**HYPOTHESIS（意味、断定しない）**: この`+0x98`スロットが
+返す値は、Steam APIの内部バージョン識別子・セッションID・
+インターフェースの世代（generation）識別子等である可能性が
+あるが、シンボルによる裏付けはなく、命名しない。
+
+グローバル`0x17E4163`（1byte）・`0x17E4164`（4byte）に
+ついては、`.text`セクション内に真の書き込み命令は1件も
+見つからなかった（`cmp`/`cmove`による読み取りのみ、166件）。
+これらの値が.dataセクションの静的初期値のままなのか、
+`.text`以外の経路（動的リンク時の別モジュール、あるいは
+本解析が追えていない別の書き込み経路）で設定されるのかは
+UNRESOLVEDとする。
+
+### 96.3 `inner+0x109708`: 直接的な単純write命令は0件
+
+**CONFIRMED（capstone直接観測）**: `disp==0x109708`を持つ
+全13件の命令のうち、**書き込み（destinationオペランドとして
+`mov`等）に該当するものは1件もなかった**。内訳は`cmp`
+（読み取り専用）6件、`lea`（アドレス計算のみ）3件、
+`mov`（読み取り）4件だった。
+
+3件の`lea`（`+0x109708`のアドレスを計算するのみで、その場で
+値を書き込まない命令）を追跡した結果:
+
+```
+RVA 0x5D5429（コンストラクタと推測される関数内）:
+  lea rcx, [rdi + 0x109708]
+  xor edx, edx
+  mov r8d, 0x3f64          ; サイズ引数（0x3f6×16=0x3f60に近い値）
+  call 0x139145910          ; 汎用ヘルパー（memset/クリア相当と推測）
+
+RVA 0x601687:
+  lea rdx, [r14 + 0x109708] ; アドレスを引数として渡す
+  call 0x1385f1890          ; 別の大きな関数（96.4節）
+
+RVA 0x601CD8:
+  lea rcx, [r14 + 0x10d66c]
+  mov r8d, 0x3f64
+  lea rdx, [r14 + 0x109708]
+  call 0x139145260          ; 同種の汎用ヘルパー
+```
+
+**HYPOTHESIS**: `mov r8d, 0x3f64`というサイズ引数
+（`0x10970d`から始まる16エントリ×`0x3f6`byteのテーブル全体
+のサイズにほぼ一致）から、これらの呼び出しは
+`+0x109708`そのものへの意味付けされた値の代入ではなく、
+**`+0x109708`を含む、より大きなテーブル領域全体を
+まとめてゼロクリア/初期化する**汎用処理（memset相当）で
+ある可能性が高い。
+
+### 96.4 `call 0x1385f1890`の追跡: 個別の意味ある代入は未発見
+
+RVA `0x601687`から呼ばれる関数（VA `0x1385F1890`）を
+`ret`到達までread-onlyで逆アセンブルした。この関数は
+`R12 = RDX`（＝`+0x109708`のアドレス）を保持しつつ、
+複雑なエラーコード判定・別オブジェクト（`[rsi+0xc18]`/
+`[rsi+0xc20]`等、self（RSI）とは別の内部管理オブジェクトへの
+参照）へのアクセスを行うが、`R12`（`+0x109708`のアドレス）を
+実際に使う箇所は:
+
+```
+mov rcx, r12
+call 0x139145260   ; 96.2/96.3節と同じ汎用ヘルパー
+
+mov rcx, r12
+call 0x139145910   ; 96.3節と同じ汎用ヘルパー（r8d=0x3f64）
+```
+
+の2箇所のみであり、いずれも同じ「大きな領域のクリア/
+初期化」ヘルパーへの委譲だった。この関数の中で
+`+0x109708`という特定の4byteフィールドに**個別に意味のある
+値を代入する命令は見つからなかった**。
+
+### 96.5 判定: writer未発見、D1/D2/D3いずれも確定に至らず
+
+**CONFIRMED**: `inner+0x109708`に対する、単一の4byte値を
+意味を持って代入する専用のwrite命令は、`steamclient64.dll`の
+`.text`セクション全体を通じて発見できなかった。見つかった
+唯一の関連コードは、この領域を含む大きなテーブル全体を
+まとめてゼロクリアする汎用ヘルパー呼び出しのみである。
+
+**判定（保留）**: ユーザー提示のD1（`+0x109708`のwrite元が
+グローバル`0x17E4160`/`0x17E4164`と同じ値源）・D2
+（別の内部状態だが初期化/世代処理で同期）・D3
+（flatInner側ではこのwrite pathを通らない）のいずれも、
+本節の調査だけでは確定できなかった。むしろ、
+`+0x109708`という4byteフィールドは「通常はゼロクリアされる
+だけの領域」であり、`managedStored=0x00159168`（94章）という
+非ゼロ値が、そもそも本フィールドの意図された用途を反映した
+値なのか、それとも別の要因（メモリ再利用による残留値、
+`+0x109708`という具体的定数を使わない動的オフセット計算
+経路の見落とし等）によるものなのかは、本節時点で
+**UNRESOLVEDのまま**とする。
+
+この結果は「readerを増やす前にwriterを探す」という方針
+自体は正しかったことを示す。すなわち、90章で想定していた
+「`+0x109708`は明示的に設定されるinputHandleゲート」という
+モデル自体が、95章の引数対応訂正に続き、さらに疑わしいものと
+なった。
+
+本節は静的解析のみであり、実装・ビルド・デプロイ・runtime
+probeは一切行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 97. `inner vtable +0x98`の追跡 — 実は`+0x608`への2段階委譲、実装は複雑な配列/リスト操作で単純な値取得ではなかった（2026-09-08）
+
+### 97.1 `innerVtable+0x98`の関数RVAを推測なしで確定
+
+89章でCONFIRMEDした`innerVtable`（RVA `0x12AEE70`）から、
+`*(innerVtable + 0x98)`の生バイト値をディスク上の
+`steamclient64.dll`から直接読み取った:
+
+```
+innerVtable+0x98: VA=0x1385E5450 → RVA=0x5E5450
+```
+
+### 97.2 自己訂正: `+0x98`実装の関数境界を誤り、正しくは2命令のみ
+
+RVA `0x5E5450`から`ret`到達まで読もうとしたところ、当初
+200命令超えても`ret`に到達しない長大なコードが続いた。
+しかし65章で既に一度経験した「関数境界を超えて隣接する
+無関係な関数まで読んでしまう」という同じ誤りに気づき、
+出力を注意深く見直した結果、**RVA `0x5E5450`の実際の実装は
+わずか2命令**であることが判明した:
+
+```
+0x1385e5450: mov rax, qword ptr [rcx]
+0x1385e5453: jmp qword ptr [rax + 0x608]
+0x1385e545a: int3  (以下5個、関数終端のパディング)
+```
+
+**CONFIRMED（自己訂正）**: `innerVtable+0x98`は、それ自体が
+値を計算する実装ではなく、**同じself（inner self、RCXは
+`+0x98`呼び出し時点のまま変更されていない）のvtableの
+別のスロット（`+0x608`）へ単純にtail-callで委譲するだけの
+thunk**である。当初「`+0x98`呼び出し直後に`and eax,0xffffff`
+がある」ことから直接この命令列がグローバル値を生成している
+かのように96章で記述したが、実際の値生成ロジックは
+`+0x608`側にある。
+
+### 97.3 `innerVtable+0x608`の実装
+
+同様にディスク上のPEから`*(innerVtable+0x608)`を解決した:
+
+```
+innerVtable+0x608: VA=0x1385E5460 → RVA=0x5E5460
+```
+
+この実装をread-onlyでcapstone逆アセンブルしたところ、
+200命令を超える長大なコードであり、`ret`にまだ到達して
+いない。内容を確認したところ、**単純な値のgetterではなく**、
+以下のような処理が読み取れた（要点のみ）:
+
+```
+mov r14, rcx          ; r14 = self
+movsxd rbx, r9d       ; rbx = 引数(64bit拡張)
+add rcx, 0x1c0
+mov rsi, r8
+mov ebp, edx
+call [rip+...]         ; ロック取得等と推測
+cmp byte [r14+0x10932d], 0
+je （通常パス）
+（エラー/アサート的な分岐、文字列参照 RVA 0x117928C 経由）
+...
+（複数の配列に対する線形探索ループ、要素の一致確認、
+  call 0x139145260（メモリ移動/シフト系ヘルパー、96章にも
+  登場した同一関数）を伴う要素削除/シフト処理と推測される
+  パターンが3回以上繰り返される）
+```
+
+**CONFIRMED（machine code直接観測）**: この実装は、
+GetAnalogActionDataのような単純なgetterの戻り値生成ロジック
+とは性質が異なり、**複数の配列/リスト構造に対する探索・
+要素削除（シフト）を伴う、イベント処理またはリスト管理系の
+処理**に見える。
+
+**HYPOTHESIS（強い疑い）**: 96章で「`+0x98`（実は`+0x608`）
+呼び出し直後の`and eax,0xffffff`がグローバル`0x17E4160`の
+値源」としたが、この`+0x608`実装が実際にEAXへ意味のある
+値を`ret`前に設定しているかどうかは、本節時点でまだ`ret`
+命令に到達しておらず確認できていない。加えて、96章で見た
+呼び出し元（RVA `0x71D3DF`）は`RCX`のみを設定して
+`call [rax+0x98]`しており、**RDX/R8/R9を明示的に設定して
+いない**（呼び出し前の残留値がそのまま渡る）。これは、この
+`+0x608`実装が本来「複数引数を取る別の用途のAPI」であり、
+96章の呼び出し元コードは、たまたま偶然この同じvtable
+スロット番号を、意図せず異なる目的で（あるいは筆者の読み違いで
+別のスロットを）呼び出している可能性を含め、**96章での
+「+0x98がグローバル値の生成源」という対応付け自体を
+再確認する必要がある**、という新たな疑いが生じた。
+
+### 97.4 判定と次段
+
+本節時点で、当初期待していた「`+0x98`は`GetAnalogActionData`
+関連のシンプルな内部IDを返すgetter」という想定は崩れた。
+`+0x98`実装（実質`+0x608`）は、GetAnalogActionDataの戻り値
+生成ロジックとは無関係に見える、別カテゴリの処理
+（配列/リスト管理）である可能性が高い。
+
+この結果、96章の「グローバル`0x17E4160`は`+0x98`（inner
+vtable経由）の戻り値に由来する」という結論自体を、
+再度、呼び出し元コード（RVA `0x70F9F8`・`0x71D3DF`）の
+文脈からもう一度慎重に見直す必要がある。特に、これら2つの
+書き込み元コードが本当に「89章でCONFIRMEDしたinner
+vtable」を経由しているのか、あるいは別の（GetAnalogActionData
+とは無関係な）オブジェクトのvtableを経由しているのかを、
+断定せず再確認することが次段の課題である。
+
+本節は静的解析のみであり、実装・ビルド・デプロイ・runtime
+probeは一切行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 98. writer call-siteのobject/vtable identity再検証 — E2確定: 96章の対応付けを撤回（2026-09-08）
+
+### 98.1 outer vtableの正確なRVAを確定
+
+83章のruntimeログ（`managedVtable=flatVtable=0x7FF8E2A58C40`、
+`moduleBase=0x7FF8E1770000`）から、outer vtableのRVAを算出し
+（`0x7FF8E2A58C40 - 0x7FF8E1770000 = 0x12E8C40`）、ディスク上の
+`steamclient64.dll`から`*(outerVtable+0x78)`を読んで
+検証したところ、期待通りRVA `0x710BB0`
+（`GetAnalogActionData`のouter実装、86/87章でCONFIRMED済み）
+と一致した。**CONFIRMED**: outer vtableのRVAは`0x12E8C40`で
+確定である（推測ではなく、既知の値との突合せで検証済み）。
+
+### 98.2 RVA `0x70F9F8`を含む関数の完全な取得経路を再確認
+
+RVA `0x70F9F8`（96章のwriter候補）を含む関数の開始点は
+RVA `0x70F940`であることを確認し、そのプロローグから
+`call [rax+0x98]`までのデータフローを再追跡した:
+
+```
+call 0x138970b20        ; 何らかのグローバル/シングルトン取得関数
+mov rcx, rax             ; rcx = その戻り値
+mov r10, [rax]
+call [r10 + 0x70]        ; 別のvtable、+0x70スロット
+mov rbx, rax              ; rbx = その戻り値（selfとして使う対象）
+test rax, rax; jne ...    ; nullチェック
+mov rax, [rax]            ; rbxのvtableロード
+mov rcx, rbx               ; ★このrbxがcall [rax+0x98]時点のself
+...
+call qword ptr [rax + 0x98]
+```
+
+**CONFIRMED（machine code直接観測）**: この関数は、
+GetAnalogActionData系で確認済みの`[outer+0x8]`委譲パターンを
+**一切使用していない**。selfの取得経路は完全に別系統
+（`call 0x138970b20`→戻り値の`+0x70`スロット→その戻り値）
+であり、87/88章でCONFIRMED済みのinner object取得経路とは
+無関係である。
+
+### 98.3 outer vtable全スロットとの照合: いずれのwriter関数も含まれない
+
+outer vtable（RVA `0x12E8C40`）の先頭0x200byte分
+（64スロット、2回繰り返しパターンが確認できた=多重継承の
+可能性、HYPOTHESIS）を読み出し、96章の2つのwriter関数の
+開始アドレス（RVA `0x70F940`・`0x71D3B0`）がこの中に
+含まれるかを照合した。
+
+```
+outerVtable+0x98 = RVA 0x711120   （97章で追跡したinner
+                    vtable+0x98=RVA 0x5E5450とは全く別のアドレス）
+```
+
+**CONFIRMED**: outer vtableのスロット0〜0x1F8（64スロット分）
+のいずれにも、RVA `0x70F940`・`0x71D3B0`は一致しなかった。
+すなわち、この2つのwriter関数は、GetAnalogActionDataが
+属するouter vtableのメンバではない。
+
+### 98.4 判定: E2確定 — 96章の対応付けを撤回
+
+ユーザー提示の判定ケースにおける**E2**
+（`writerは別vtable/別object型` → 96章の
+「GetAnalogActionData系inner由来」という解釈を撤回）が
+成立した。
+
+**CONFIRMED（撤回）**: 96章で記述した
+「グローバル`0x17E4160`は`GetAnalogActionData`系inner
+vtableの`+0x98`スロットの戻り値に由来する」という対応付けは
+**誤りであり撤回する**。実際には、RVA `0x70F9F8`・
+`0x71D3DF`の2つの書き込み元は、GetAnalogActionDataの
+`[self+0x8]`→inner→vtableという取得経路とは**全く別の
+オブジェクト取得経路**（少なくとも一方は完全に独立した
+`call 0x138970b20`起点の経路）を使っており、「`+0x98`という
+同じスロット番号」だけで同一視したことが誤りの原因だった。
+
+**教訓（97章の懸念が的中）**: `+0x98`のような**vtable
+スロット番号の一致は、同一クラス・同一意味を保証しない**
+（97章末尾で既に「同じslot番号≠同じ意味・vtable・object型」
+という警戒を記録していたが、本節でE2として確定した）。
+グローバル`0x17E4160`は、Steamクライアント内の**別の
+サブシステム**（`call 0x138970b20`が返すオブジェクト、
+未特定、HYPOTHESIS）に由来する値であり、
+`GetAnalogActionData`／`inner+0x109708`との直接的な関連は、
+本節時点で**再び白紙**に戻った。
+
+### 98.5 次段への示唆
+
+97章の`+0x608`深追いは不要と判断し中止する。今回の教訓を
+踏まえ、次に`+0x109708`の意味を追う場合は、
+「vtableスロット番号の一致」ではなく、**実際に
+`pad.Controller`が保持するcontroller handle・inputHandle等、
+既知のmanaged側の値と直接一致するかをruntimeでread-only
+観測する**（91/93章で既に試みた方向性）ほうが、静的解析
+だけで深追いするより確実である可能性が高い。ただし
+これは次段でユーザーと合意の上決定する。
+
+本節は静的解析のみであり、実装・ビルド・デプロイ・runtime
+probeは一切行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 99. `effectiveR8`と`inner+0x109708`の同一フレーム比較を実装・ビルド・デプロイ（2026-09-08）
+
+### 99.1 目的
+
+95章でCONFIRMEDしたouter wrapperの計算
+（`and r8d,0xffffff`、条件成立時`cmove r8d,[globalC]`）を
+runtime read-onlyで**machine codeの通りに文字通り**再現し、
+`inner+0x109708`（90.3章でCONFIRMED済みのcmp対象offset）と
+同一フレームで直接比較するため、`Root26AnalogDataSelfSwapProbe`
+（84章）を拡張した。98章のE2確定を受け、`0x17E4160`等の
+意味付けや別サブシステムのwriter追跡は行わず、あくまで
+「GetAnalogActionData自身が実際に比較に使う値」だけを
+対象とした。
+
+### 99.2 実装
+
+- `steamclient64.dll`の実行時ロードベースアドレスを
+  `Process.Modules`（read-only、既存probe群と同じ機構）から
+  取得し、以下を読む:
+  ```
+  globalA  = *(uint32*)(steamclientBase + 0x17E4160)
+  selector = *(byte*)  (steamclientBase + 0x17E4163)
+  globalC  = *(uint32*)(steamclientBase + 0x17E4164)
+  effectiveR8 = (selector == 2) ? globalC : (globalA & 0x00FFFFFF)
+  ```
+  95章の`cmove`命令を省略・簡略化せず、条件分岐も含めて
+  そのまま再現した（`selector==2`の場合は`globalC`を
+  **マスクなしで**そのまま採用する点も、machine codeの
+  `cmove r8d,[globalC]`が既にマスク済みのr8dを丸ごと
+  上書きする動作と一致させた）。
+- 既存の`managedSelfCandidate`/`flatSelf`（84章と同じ
+  read-onlyチェーン）から、87/88章でCONFIRMED済みの
+  `+0x8`委譲を経て`managedInner`/`flatInner`を求め、
+  `managedField`/`flatField`（`inner+0x109708`の4byte値）を
+  読む。
+- これらを`managed`/`viaFlatSelf`/`viaManagedSelf`という
+  既存の同一フレーム比較（84章）と**同じSTATE-CHANGEログ行**
+  に含めて出力する（`chapter99(...)`セクション）。
+- いずれかの値が未解決（`steamclient64.dll`のbase未解決、
+  managedSelfCandidate/flatSelf/inner未解決）の場合は、
+  その旨を明示して`n/a`とし、状態変更なく次フレームで
+  再試行する（例外にしない）。
+- 新規Steam API呼び出しなし、function pointer呼び出しなし、
+  `Marshal.Write*`不使用。
+
+### 99.3 ビルド・デプロイ・ハッシュ確認
+
+`ModMain.cs`の`Root26Phase4NativeRecoveryPoc.Sample()`・
+`Root26Phase8OverlayToStoreOpenPoc.Sample()`の2行がコメント
+アウトされたままであることをビルド前に再確認した
+（本節は既存probeの拡張のみで、`ModMain.cs`自体への変更は
+行っていない）。
+
+`dotnet build -c Release -v q`は0警告・0エラーで成功した。
+ビルド成果物を
+`C:\Program Files (x86)\Steam\steamapps\common\smt3hd\Mods\
+NocturneModernController.dll`へデプロイし、
+ソース側・デプロイ先のSHA-256が完全一致することを確認した
+（`172c78302ccf8839e16369c1e4063f8cedce57ac0dbb8faab02c04fa6c5bc087`）。
+
+本節時点でGit commit/pushは行っていない。次に必要なのは、
+ユーザー提案の実機テスト手順（起動→探索→RSTICKを明確に
+動かす。可能であればGuide前後の両方で観測）による、
+`Root26AnalogDataSelfSwap`ログの`chapter99(...)`セクションの
+観測である。特にmanaged側が非ゼロx/yを返しているフレームでの
+比較が最も証拠力が高い。
+
+判定基準（ユーザー提示、そのまま採用）:
+
+```
+F1: effectiveR8==managedField かつ effectiveR8!=flatField
+    （同フレームでviaManagedSelf=valid, viaFlatSelf=all-zero）
+→ [inner+0x109708] cmpがflatSelfのearly-zeroを直接説明する
+  ことをCONFIRMEDできる。
+
+F2: effectiveR8==managedField かつ effectiveR8==flatField
+→ このcmpは両方通過。次の分岐/handle-table側へ進む。
+
+F3: effectiveR8!=managedField
+→ managed側がvalid resultを返している同一フレームなら、
+  現在のoffset/条件/データフロー解釈と矛盾するため、
+  そこで停止して再検証する。
+```
+
+`0x00159168`等の値の意味（session ID等）は、本節時点でも
+まだ命名・断定しない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 100. 実機テスト結果: F1確定 — `[inner+0x109708]`のcmpがflatSelfのearly-zero returnを直接説明することをCONFIRMED（2026-09-08 16:14台）
+
+### 100.1 テスト結果（RSTICK実データ区間）
+
+RSTICKを実際に動かした区間（例、handle=91728467815138660）:
+
+```
+managed(eMode=6 x=-0.9998779 y=0.014862514 bActive=True)
+viaFlatSelf(raw0=0 raw1=0 raw2=0 raw3=0)
+viaManagedSelf(raw0=6 raw1=float(-0.9998779) raw2=float(0.014862514) raw3=1)
+chapter99(
+  effectiveR8=0x00159168(globalA=0x00159168 selector=0 globalC=0x00000000)
+  managedField(inner+0x109708)=0x00159168
+  flatField(inner+0x109708)=0x00000000
+  effectiveR8==managedField:True
+  effectiveR8==flatField:False
+)
+```
+
+**CONFIRMED**: managed側が実データ（非ゼロx/y、`bActive=True`）
+を返している全STATE-CHANGE行（`grep`で確認した250行すべて）
+において、`effectiveR8==managedField:True`かつ
+`effectiveR8==flatField:False`が一貫して成立した。
+
+### 100.2 判定: F1確定
+
+ユーザー提示の判定基準における**F1**
+（`effectiveR8==managedField` かつ `effectiveR8!=flatField`、
+同フレームで`viaManagedSelf=valid`・`viaFlatSelf=all-zero`）
+が成立した。
+
+**CONFIRMED**: `[inner+0x109708]`とouter wrapperが計算する
+`effectiveR8`との一致・不一致が、`GetAnalogActionData`が
+実データを返すか、即座にゼロを返すかを直接決定している。
+`managedInner`側は`[+0x109708]=0x00159168`が`effectiveR8`と
+一致し続けているため、cmpを通過して実データを返す。
+`flatInner`側は`[+0x109708]=0x00000000`が`effectiveR8`と
+常に不一致であるため、cmpに失敗し即座にゼロを返す。
+
+これにより、67〜99章を通じて観測してきた「flat v002経由の
+動的Steam Input API（`GetCurrentActionSet`・
+`GetAnalogActionOrigins`・`GetAnalogActionData`）が常に
+ゼロ/無効値を返す」という現象の、**`GetAnalogActionData`に
+関する限り、machine code上の直接的な内部メカニズム**が
+CONFIRMEDされた。
+
+### 100.3 追加の強い相関: `managedField`不一致時、managed側自体もINACTIVEになる
+
+セッション全体（277件の有効な`chapter99(...)`行）を精査した
+ところ、`managedField`は2種類の値
+（`0x00159168`・`0x0006C476`）を取り、後者の場合は
+`effectiveR8==managedField:False`となっていた。この不一致が
+発生していたタイミングを確認したところ、**同じ行の`managed`
+セクションが`eMode=0 x=0 y=0 bActive=False`（＝完全に
+INACTIVE）であり、`viaManagedSelf`も同時に全ゼロ**だった
+（複数行で確認）。
+
+```
+managed(eMode=0 x=0 y=0 bActive=False)
+viaManagedSelf(raw0=0 raw1=0 raw2=0 raw3=0)
+chapter99(effectiveR8=0x00159168 managedField=0x0006C476
+  effectiveR8==managedField:False)
+```
+
+**CONFIRMED**: `managedField`（`managedInner+0x109708`）が
+`effectiveR8`と一致しなくなる瞬間、`managed`側（IL2CPP
+managed bindingの結果）自体も同時にINACTIVEへ転じている。
+これは、`managedInner`も`flatInner`と全く同じcmpロジックに
+支配されており、**`[inner+0x109708]`と`effectiveR8`の一致・
+不一致こそが、managed/flat問わずこのAPIの有効性を決定する
+共通の内部ゲートである**という理解を、追加の独立した観測から
+さらに強く支持する。`flatInner`だけが特別に壊れているのでは
+なく、**`flatInner`の`[+0x109708]`が常にこのゲートを通過
+できない値（`0`固定）である**、という構図がここで完全に
+確定した。
+
+### 100.4 未解決点（意図的に断定しない）
+
+- `effectiveR8`（`0x00159168`・`0x0006C476`等）・
+  `managedField`・`flatField`の値自体が何を意味するか
+  （98章のE2により「GetAnalogActionData系object由来では
+  ない」ことは確定したが、真の意味・生成元サブシステムは
+  未特定）は、本節でも命名・断定しない。
+- `flatInner`の`[+0x109708]`がなぜ常に`0`のままなのか
+  （96章で確認した通り、直接的な明示的write-siteは
+  `.text`全体で発見できていない）も、依然UNRESOLVEDである。
+
+本節時点でGit commit/pushは行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 101. inner `GetAnalogActionData`の`+0x109708`より後段を、訂正済みcalling conventionでzero-baseから再構築（2026-09-08）
+
+### 101.1 flatSelf調査の完了宣言と本丸への回帰
+
+100章でF1がCONFIRMEDされたことにより、flatSelfの
+`GetAnalogActionData`が常にゼロを返す直接的machine code上の
+原因（`[flatInner+0x109708]=0`が`effectiveR8`と常に不一致で
+early-exitする）が判明した。この件についてはこれ以上の追跡を
+一旦終了し、本来の調査目的（native RSTICKのDEAD→LIVE遷移）へ
+戻る。
+
+85章で確認済みの通り、DEAD区間でも`managedSelf`経由の
+`GetAnalogActionData`は`eMode=6, bActive=True`（＝
+`+0x109708`ゲートと後述の per-action activeゲートの両方を
+通過している）状態であり、`x=0, y=0`だけがDEAD特有である。
+すなわち、DEAD→LIVE問題は`+0x109708`ゲートより**後段**に
+あることが、既存データからも裏付けられる。
+
+### 101.2 inner `GetAnalogActionData`（RVA `0x5EDE10`）の全体再構築
+
+90章のcalling convention誤認（95章で訂正済み: `R8=effectiveR8`・
+`R9=inputHandle`・スタック引数`=analogActionHandle`）を前提に、
+`+0x109708`ゲート以降のロジックをzero-baseで再構築した
+（read-only、machine codeの直接観測に基づく）。
+
+**Step 1: controller slot検索（既出、90/95章で訂正済み）**
+
+```
+rbp = inputHandle（R9由来、CONFIRMED）
+self+0x10970d を先頭に、各エントリ0x3f6byte・最大16
+エントリの表からrbpと一致するエントリを線形探索し、
+一致したインデックス（0〜15、EDXに保持）を
+"controllerSlotIndex"として得る。一致しなければearly-exit。
+```
+
+**Step 2: `effectiveR8`ゲート（100章でCONFIRMED済み、本節では
+再言及のみ）**
+
+```
+cmp r14d([effectiveR8]), [self+0x109708]; jne early-exit
+```
+
+**Step 3: analogActionHandleの取得と範囲チェック（新規、
+本節でCONFIRMED）**
+
+```
+mov ecx, [rsp+0x70]     ; inner自身のスタックフレーム上の
+                          第5引数（=analogActionHandle、
+                          95章の訂正通り）
+dec ecx
+cmp ecx, 0x17; ja early-exit   ; (analogActionHandle-1) が
+                                  0〜0x17(23)の範囲、すなわち
+                                  analogActionHandleが1〜24の
+                                  範囲であることを検証
+```
+
+**Step 4: per-(controller, action)エントリのoffset計算
+（新規、本節でCONFIRMED）**
+
+```
+entryOffset = (controllerSlotIndex * 0x4e(78) +
+               (analogActionHandle - 1)) * 0xd(13)
+```
+
+`0xd`（13byte）は、eMode(4)+x(4)+y(4)+bActive(1)の合計サイズと
+完全に一致する（85/95章でCONFIRMED済みのnative struct
+サイズ）。このエントリの実アドレスは
+`self + 0x1097a2 + entryOffset`である。
+
+**Step 5: per-actionの「利用可能」フラグチェックと即時ゼロ
+返却（新規、本節でCONFIRMED）**
+
+```
+cmp byte[entry + 0xc], 0; je early-exit-with-zero
+```
+
+`entry+0xc`は、後続でそのまま出力の`bActive`フィールドへ
+コピーされるのと**同一のフィールド**である（アドレス
+`self+0x1097a2+entryOffset+0xc` = `self+0x1097ae+entryOffset`
+と一致）。すなわちこのチェックは「この
+(controller,action)組み合わせのエントリが現在
+`bActive=False`なら、コピー処理を省略して早期にゼロ構造体を
+返す」という最適化であり、**`+0x109708`ゲートとは独立した、
+別の第2のゲート**である。
+
+**Step 6: エントリデータのコピー（85/95章の対応を再確認）**
+
+```
+[entry+0x0..0x3] (eMode)  -> [出力+0x0]
+[entry+0x4..0x7] (x)      -> [出力+0x4]
+[entry+0x8..0xb] (y)      -> [出力+0x8]
+[entry+0xc]      (bActive)-> [出力+0xc]
+```
+
+（`movsd`による8byte一括コピーで`entry+0x0..0x7`
+=eMode+xがまとめて転送される点は72.2/90/95章と同一）
+
+**Step 7: eModeに応じた相対値（delta）計算の分岐
+（新規、本節でCONFIRMED、ただしRSTICKには非該当）**
+
+```
+eMode(コピー元の値)が0〜0x1d(29)の範囲内かつ、
+ビットマスク0x3e420090の対応bitが立っていれば、
+"relative"モードとみなし、self+0x116920領域に保持された
+前回値との差分（xmm0/xmm1のsubss）を計算して出力を
+上書きする。
+```
+
+**CONFIRMED（python計算による直接検証）**: ビットマスク
+`0x3e420090`で立っているbitは`{4,7,17,22,25,26,27,28,29}`
+のみである。85/100章で実際に観測されたRSTICKの
+`eMode=6`は、このいずれのbitにも該当しない
+（`bit6`は立っていない）。**したがって、RSTICKの
+`eMode=6`は常にこの"relative"分岐を通らず、Step6で
+コピーされた値がそのまま最終出力として使われる**
+（`jae`によりrelative計算をスキップする側へ分岐する）。
+
+### 101.3 判定: DEAD→LIVEの分岐は`GetAnalogActionData`内部にはない
+
+Step1〜7の全経路を通じて、**DEAD（`x=0,y=0`）とLIVE
+（実際のstick位置）を区別する条件分岐は`GetAnalogActionData`
+inner実装の中に一つも存在しない**ことがCONFIRMEDされた。
+`+0x109708`ゲート（controller単位）・Step5の
+per-actionアクティブフラグゲート（`entry+0xc`）・
+Step7のrelativeモード分岐（RSTICKには非該当）は、いずれも
+DEAD/LIVEで同じ結果（ゲート通過・absolute modeコピー）に
+なる。
+
+**CONFIRMED（本節の中心的結論）**: `GetAnalogActionData`は、
+`self + 0x1097a2 + entryOffset`にある13byteエントリの内容を
+**純粋に読み取って返すだけ**の関数である。DEAD時に
+`x=0,y=0`である理由は、`GetAnalogActionData`が何か特別な
+ゼロ化処理をしているからではなく、**そのエントリの`x`
+（`entry+0x4`）・`y`（`entry+0x8`）フィールド自体に、その
+時点で文字通り`0.0`という値が格納されているから**である。
+LIVE化後にこのフィールドの値が実際のstick座標へ更新される
+経路（controller polling/HID処理等、`GetAnalogActionData`とは
+別のコード）が、`steamclient64.dll`のどこかに存在するはずだが、
+本節では未特定である。
+
+### 101.4 次段（未実装、提案のみ）
+
+DEAD→LIVE問題の核心は、`self + 0x1097a2 + entryOffset + 0x4`
+（x）・`+ 0x8`（y）というフィールドへの**writer**を
+特定することに絞られた。これは96章で試みた「writerの
+静的追跡」と同種のアプローチだが、対象フィールドが
+明確に絞られている点で96章より的が絞りやすい。
+
+ただし、96章の教訓（vtableスロット番号だけで同一視しない・
+writer未発見≠書かれない）を踏まえ、次段では
+慎重にcall-siteのobject identityを都度確認しながら進める
+必要がある。この静的追跡を次章で行うか、あるいは
+runtime read-onlyで「Guideを押した瞬間に、この特定の
+メモリアドレス（`managedInner+0x1097a2+entryOffset+0x4/0x8`）
+の値がいつ・どのタイミングで変化するか」を監視する方が
+効率的か、次段の方針はユーザーと合意の上で決定する。
+
+本節は静的解析のみであり、実装・ビルド・デプロイ・runtime
+probeは一切行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 102. x/y writer静的探索: 直接writeは0件、entryを読む「変化検出」consumer関数を発見（G3寄りの結果）（2026-09-08）
+
+### 102.1 手法と結果: 直接write命令は0件
+
+`steamclient64.dll`の`.text`セクション全体（521万命令超）を
+capstoneでread-only逆アセンブルし、entryの4フィールド
+（`0x1097a2`/`0x1097a6`/`0x1097aa`/`0x1097ae`、baseレジスタは
+問わない）への参照を全件検索した。
+
+**CONFIRMED**: 4フィールドいずれについても、destination
+オペランドとしての書き込み（`mov`/`movss`/`movsd`等）は
+**0件**だった。参照は合計18件、すべて読み取り（`mov`/`movsd`
+等のsourceオペランド）のみだった。
+
+### 102.2 発見: 同一entryOffset計算式を使う「変化検出」関数
+
+読み取り18件のうち3件（RVA `0x601b28`・`0x601b71`・
+`0x601c05`）が、97章で確認した`+0x109708`参照と同じ関数
+（RVA `0x601687`付近を含む大きな関数）内にあることを発見した。
+
+この関数内で、101章とentryOffset計算式が完全に一致する
+コードを確認した:
+
+```
+imul r15, rsi, 0x4e        ; r15 = controllerSlotIndex(rsi) * 0x4e
+...
+lea rax, [r15 + rdx]        ; rax = controllerSlotIndex*0x4e + actionIndex(rdx)
+imul r8, rax, 0xd           ; r8 = entryOffset（101章と完全一致）
+mov rcx, [r8+r14+0x1097a2]  ; entry先頭8byte(eMode+x)を読む
+sub rcx, [r8+r14+0x10d706]  ; 別バッファ（"前回値"キャッシュと推測）と比較
+jne 変化あり
+mov ecx, [r8+r14+0x1097aa]  ; yを読む
+mov eax, [r8+r14+0x10d70e]  ; 前回のy
+sub rcx, rax
+jne 変化あり
+movzx ecx, [r8+r14+0x1097ae] ; bActiveを読む
+movzx eax, [r8+r14+0x10d712] ; 前回のbActive
+sub rcx, rax
+je 変化なし・スキップ
+```
+
+**CONFIRMED（object identity再確認、98章の教訓を適用）**:
+この関数のentryOffset計算式（`controllerSlotIndex*0x4e +
+actionIndex`、そのまま`*0xd`）は、101章でGetAnalogActionData
+inner実装からCONFIRMEDした計算式と**完全に一致**する。
+これは98章のE2（vtableスロット番号だけでobject型を同一視
+しない）の教訓を踏まえ、計算式そのものの一致という、より
+直接的なdata-flow上の根拠に基づく確認である。すなわち、
+この関数は101章のGetAnalogActionDataと**同じentryテーブル
+構造**を扱っている。
+
+**CONFIRMED（この関数の性質）**: この関数は、entry
+（現在値）と、`+0x10d706`から始まる別のバッファ（前回値の
+キャッシュと推測、HYPOTHESIS）を**比較するだけ**であり、
+entry自体への書き込みは行っていない。すなわちこの関数は
+entryの**writerではなくconsumer**（変化を検出して後続の
+通知/コールバック処理へ進める側）である。変化が検出された
+場合、ローカル変数へ値をコピーし、eModeに応じた相対値計算
+（101章のStep7と類似、`bt r9d,ecx`によるビットマスク判定、
+`r9d=0x420090`は101章のマスク`0x3e420090`の下位24bitと一致）
+を経て、別のキャッシュ領域（`+0x117ca0`付近）へ結果を
+格納している。
+
+### 102.3 訂正: 巨大クリア呼び出しはentry範囲を含まない
+
+この関数の直前部分に、以下のような条件付き大規模クリア処理を
+発見した:
+
+```
+lea rcx, [r14 + 0x19a8]
+xor edx, edx
+mov r8d, 0x107980
+call 0x139145910   ; 96章にも登場した汎用クリアヘルパー
+```
+
+これは`self+0x19a8`から`0x107980`（約68万byte）という
+巨大な領域を一括ゼロクリアする処理であり、当初「entry
+テーブル全体を含むcontroller再初期化処理ではないか」という
+仮説を立てたが、**Pythonでの直接計算により、このクリア範囲
+（`0x19a8`〜`0x109328`）は、entry群のある`0x1097a2`
+（`0x109328`より大きい）を含んでいないことを確認した**。
+この仮説は誤りであり撤回する。この巨大クリア処理の実際の
+対象・意味は本節では特定していない。
+
+### 102.4 判定: G3寄り（静的にwriterを特定できず）
+
+ユーザー提示の判定ケースのうち、**G3**
+（`steamclient64.dll`内でwriterを静的に特定できない）に近い
+結果となった。直接的なwrite命令は0件、動的offset計算経路を
+辿った範囲でも、entryへの書き込みではなく「読み取り＋比較
+（変化検出）」のみが見つかった。
+
+ただし完全なG3（お手上げ）ではなく、以下の副産物が得られた:
+
+- entryを扱う**もう一つの独立したコードパス**（変化検出
+  consumer関数）を発見し、同一entryOffset計算式によって
+  101章のGetAnalogActionDataと同じテーブル構造を扱っている
+  ことをCONFIRMEDした。
+- `self+0x190`（何らかのハンドラ/manager参照、null
+  チェックあり）・`self+0x116780`（変化検出をトリガーする
+  カウンタ、HYPOTHESIS）・`self+0x10d706`〜
+  （entryの「前回値」キャッシュ、HYPOTHESIS）という、
+  新たな関連フィールド候補が見つかった。
+- 探索した範囲では、entry自体へのwriteは見つからなかった
+  ため、真のwriter（HIDレポート処理やcontroller pollingの
+  さらに別の場所）は、本節の`.text`全体スキャンでは
+  捕捉できない経路（動的生成コード、別モジュール、より
+  複雑なindex計算等）を使っている可能性がある。
+
+### 102.5 次段（未実装、提案のみ）
+
+ユーザー提示の方針通り、G3に該当するため、次段では
+runtime read-only監視への切り替えを提案する。具体的には、
+`managedInner + 0x1097a2 + entryOffset`（101章でCONFIRMED
+済みの計算式）のx/y値を毎フレーム読み取り、DEAD→Guide→LIVE
+の遷移点でその値が実際にいつ変化するかを観測する。あわせて
+本節で見つけた関連フィールド候補（`+0x190`・`+0x116780`・
+`+0x10d706`）も同時に観測できれば、writerの間接的な特定に
+つながる可能性がある。この実装は次章でユーザーと合意の上で
+進める。
+
+本節は静的解析のみであり、実装・ビルド・デプロイ・runtime
+probeは一切行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 103. `Root26EntryTimelineProbe`実装・ビルド・デプロイ（2026-09-08）
+
+### 103.1 目的と設計
+
+102章のG3判定を受け、runtime read-onlyでDEAD→Guide→LIVEの
+遷移時に、101章でCONFIRMED済みのentry
+（`managedInner+0x1097a2+entryOffset`）の値がいつ・どのように
+変化するかを時系列で観測するため、
+`src/Root26EntryTimelineProbe.cs`を新規実装した。
+
+**対象はmanaged routeのみ**（`flatSelf`は100章で完了扱いと
+した通り、本節では対象外）。
+
+- `controllerSlotIndex`は固定値を仮定せず、
+  `managedInner+0x10970d`（90/95/101章でCONFIRMED済みの
+  controller handleテーブル、最大16エントリ・各0x3f6byte）を
+  毎フレームread-onlyで線形探索し、RSTICKの実際の
+  `inputHandle`と一致するインデックスを求める。
+- `analogActionHandle`は、既存probe群と同じ規約
+  （`ActionSets[Current].Analog[1].Handle`、i=1→IG_RSTICK、
+  66/74/84章で確立済み）で、既存managed stateから動的取得する
+  （固定値2を仮定しない）。
+- `entryOffset = (controllerSlotIndex*0x4e +
+  (analogActionHandle-1)) * 0xd`（101章でCONFIRMED済みの計算式
+  をそのまま使用）。
+- entry（`+0x0`eMode・`+0x4`x・`+0x8`y・`+0xc`bActive）を
+  読み取る。
+- 102章で発見した関連候補も、意味を断定せず中立的な名前
+  （`cacheCandidate`）で同時観測する:
+  `cacheCandidate = managedInner + 0x10d706 + entryOffset`
+  （同じ0/4/8/0xcフィールドレイアウト、102章のcmp対象と
+  一致するoffset関係から算出）。
+- あわせて`managedInner+0x190`（IntPtr、102章で発見した
+  null判定対象）・`managedInner+0x116780`（int32、102章で
+  発見した変化検出カウンタ候補）も、意味を断定せずそのまま
+  読み取る。
+- 値が変化した時のみSTATE-CHANGEログを出力する（ログ量抑制）。
+- 既存probe（`Root26Phase5OverlayActivatedProbe`・
+  `Root26ResetControllerCallProbe`・
+  `Root26SteamControllerReStartCallProbe`・
+  `Root26AnalogDataSelfSwapProbe`等）との時系列相関は、
+  新たな呼び出しを一切追加せず、既存probe群と同じ
+  `DateTimeOffset.Now:O`タイムスタンプ形式による、ログ上の
+  突き合わせのみで行う。
+
+安全性: `Marshal.Read*`のみ使用（`ReadInt32`・`ReadInt64`・
+`ReadByte`・`ReadIntPtr`）、`Marshal.Write*`は一切使用して
+いない。新規Steam API呼び出しなし、function pointer呼び出し
+なし、`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出しなし、`SendInput`なし、
+Guide偽装なし、native detour/patch/injection/hookなし。
+
+`ModMain.cs`の`Root26StoredHandleCompareProbe.Sample();`の
+直後に`Root26EntryTimelineProbe.Sample();`を独立登録した
+（`ModMain.OnUpdate()`から毎フレーム呼ばれる）。
+
+### 103.2 ビルド・デプロイ・ハッシュ確認
+
+`ModMain.cs`の`Root26Phase4NativeRecoveryPoc.Sample()`・
+`Root26Phase8OverlayToStoreOpenPoc.Sample()`の2行がコメント
+アウトされたままであることをビルド前に再確認した。
+
+`dotnet build -c Release -v q`は0警告・0エラーで成功した。
+ビルド成果物を
+`C:\Program Files (x86)\Steam\steamapps\common\smt3hd\Mods\
+NocturneModernController.dll`へデプロイし、
+ソース側・デプロイ先のSHA-256が完全一致することを確認した
+（`973481ef6ea72d188782a34e28f2ec257af46d7e0d6701927761d679d881034b`）。
+
+本節時点でGit commit/pushは行っていない。次に必要なのは、
+ユーザー提案の実機プロトコル（通常起動→exploration DEAD確認
+→DEAD中にRSTICKを明確に動かす→Guide→Overlayを閉じる→LIVE化
+までRSTICKを継続して動かす→LIVE後も数秒動かす→終了）による、
+`Root26EntryTimeline`のSTATE-CHANGEログの観測である。
+
+判定基準（ユーザー提示、そのまま採用）:
+
+```
+H1: entry.x/yがDEAD中0→Guide後の特定時点で実値へ変化→その後
+    GetAnalogActionData LIVE
+→ entryがDEAD→LIVE切替点で更新されることをruntime CONFIRMED。
+
+H2: entry.x/yはGuide直後から変化しているのにGetAnalogActionData/
+    native cameraは遅れてLIVE
+→ downstream側に追加遅延/ゲートが存在。
+
+H3: entry.x/yが最後まで0なのにGetAnalogActionDataは実値を返す
+→ 101章のentry address計算/runtime object identityと矛盾。
+  そこで停止して再検証。
+```
+
+特に`+0x116780`・`cacheCandidate`が、entry.x/y更新の**直前**に
+変化するかを重点確認する。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 104. 実機テスト結果: Guide未使用にもかかわらずentryは起動直後から非ゼロ — DEAD→LIVE問題はSteam Input層ではなくゲーム側の消費にある可能性（2026-09-08 16:49〜16:50台）
+
+### 104.1 テスト条件の確認（ユーザー申告）
+
+ログ解析の過程で、`Root26EntryTimeline`の最初の観測値
+（ゲーム起動から約14秒後）が既に非ゼロだった点に疑問を持ち、
+ユーザーに実際のテスト内容を確認した。ユーザーの回答:
+「起動直後、RSTICKがDEAD（効かない）ことを画面で確認した」。
+すなわち、ネイティブ視点操作（native right stick camera）が
+DEADであることは画面上で確認済みである。
+
+### 104.2 ログからCONFIRMEDされた事実
+
+```
+[16:49:49.702] ゲームプロセス起動
+[16:50:03.119] SteamPad.SteamControllerReStart() count=1
+[16:50:03.125] Root26Phase3 WATCH-WINDOW-START triggered by
+               SteamControllerReStart()
+[16:50:03.125] SteamPad.SteamControllerReStart() count=2
+[16:50:03.374] Root26EntryTimeline 最初のSTATE-CHANGE
+               handle=91728467815138660（RSTICK側interface）
+               entry(eMode=6 x=-0.173101 y=-0.9848933 bActive=1)
+```
+
+**CONFIRMED**: ログ全体（`16:49:49`〜`16:50:36`）を通じて
+`OverlayActivated`/`GameOverlayActivated`関連イベントは
+**0件**であり、本セッション中Guideボタンは一度も
+押されていない。
+
+**CONFIRMED**: それにも関わらず、起動時の自動
+`SteamControllerReStart()`（count=1・2、コントローラ接続に
+伴う初期化処理と推測される、既存章から周知の挙動）の直後
+（約0.25秒後）には、`Root26EntryTimeline`が観測した
+`managedInner`経由のentry（101章でCONFIRMED済みの
+`GetAnalogActionData`のデータ源そのもの）が、**既に実際の
+スティック位置を反映した非ゼロ値**（`x=-0.173101,
+y=-0.9848933`）を示していた。以降の観測でも、ユーザーが
+実際にスティックを操作したとみられる滑らかな円弧状の値の
+連続変化（`x`が-1付近から+1付近まで、対応する`y`とともに
+連続的に変化するパターン）が一貫して記録されており、
+probeのデータ取得自体は正しく機能している（`_errorLogged`
+系の警告は本セッション中0件）。
+
+### 104.3 判定: 新たな分離の発見（H1/H2/H3のいずれとも異なる、重要な示唆）
+
+**CONFIRMED（本節の中心的発見）**: ユーザーが画面上で
+ネイティブ視点操作のDEADを確認したのと同じ時間帯において、
+`managedInner`経由のentry（Steam Input内部データ、101章で
+CONFIRMED済みの`GetAnalogActionData`のデータ源）は、**既に
+実際のスティック位置を反映する非ゼロ値を保持していた**。
+
+これは、85章で観測した「DEAD区間ではmanagedSelf経由の
+`GetAnalogActionData`が`eMode=6, bActive=True`のまま
+`x=0,y=0`を返す」というパターンとは異なる。両者の違いは、
+観測タイミング（85章はGuide直前の、より早い/短いDEAD区間の
+観測だった可能性がある）に起因する可能性があり、断定は
+避けるが、**少なくとも本節のテストでは、コントローラ接続後
+わずか数百ミリ秒〜十数秒程度でSteam Input内部のentry自体は
+実際の値を持つようになっていた**ことがCONFIRMEDされた。
+
+**HYPOTHESIS（新方針の提案）**: この結果が一般的な挙動で
+あるとすれば、「native RSTICKのDEAD→LIVE問題」の本質的な
+原因は、**Steam Input側（`steamclient64.dll`のentryデータ）
+ではなく、ゲーム側（`GameAssembly.dll`）が、managed
+`SteamInput.GetAnalogActionData()`の呼び出し結果を実際に
+いつ・どう消費し、ネイティブ視点操作へ反映するか**という、
+これまで想定していたのとは異なる層にある可能性が高い。
+この場合、Guideボタン操作自体は、entryの値を変化させる
+直接の原因ではなく、**ゲーム側の何らかの消費/更新経路を
+再起動・再有効化するトリガー**として作用している可能性が
+考えられる。
+
+### 104.4 判定保留と次段の方針
+
+本節の観測は貴重だが、当初期待していた「entry.x/yがDEAD中
+0→Guide後に変化」というH1形式の遷移そのものは、本セッションでは
+観測できていない（entryが最初から非ゼロだったため）。これは
+H1/H2/H3のいずれの判定枠にも直接当てはまらない、**新しい
+第4のケース**として記録する。
+
+次段の候補として、以下をユーザーと合意の上で検討する:
+
+1. 本節と同じ実機プロトコルをより注意深く再実行し、
+   ゲーム起動直後（`Root26EntryTimeline`が最初に観測を開始する
+   より前の、さらに早いタイミング）からentryを観測できるよう
+   probeの初期化タイミングを見直す。
+2. managed `SteamInput.GetAnalogActionData()`の呼び出し結果を
+   実際にどう使っているか（GameAssembly.dll側、native right
+   stick camera実装）を、既存のHarmony probe（`Root26Phase2
+   AnalogActionDataProbe`等）のログと、今回のentryタイムラインを
+   突き合わせて再確認する。
+3. 「Guideを押さない」実機テスト（本節と同様の条件）を
+   もう一度行い、ネイティブ視点操作が実際に「ずっとDEADの
+   ままなのか」「実は途中でLIVEになっていたが見逃していたのか」
+   を、より長い観測時間で確認する。
+
+本節時点でGit commit/pushは行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 105. 再テスト結果: H1確定 — `field116780`カウンタの急増直後にentry.x/yがDEAD→LIVEへ切り替わる瞬間をruntime観測でCONFIRMED（2026-09-08 16:55〜16:56台）
+
+### 105.1 テスト条件
+
+ユーザーより、104章の結果を受けて「Guideを押すのが早すぎた
+可能性」を考慮し、**Guideをより遅めに押す**形で再テストを
+実施したとの報告を受けた。
+
+### 105.2 grepパターンの自己訂正
+
+当初、`grep -v "x=0 y=0"`でentryの非ゼロ行を抽出しようとした
+ところ0件と表示されたが、これはログ中の`cacheCandidate(...)`
+セクションが常に`x=0 y=0`を含むため、`entry(...)`側が非ゼロで
+あっても行全体が誤って除外されてしまう、筆者のgrepパターンの
+不備であることに気づいた。`entry(eMode=[0-9]* x=0 y=0`という
+より限定的なパターンへ訂正し、正しく抽出し直した。
+
+### 105.3 CONFIRMEDされたタイムライン
+
+```
+[16:55:39.687] SteamPad.SteamControllerReStart() count=1
+[16:55:39.693] SteamPad.SteamControllerReStart() count=2
+                （起動時の初期化、既知のパターン）
+
+[16:55:39.939] field116780=0x100  entry(x=0 y=0)  ※DEAD開始
+[16:56:01.213] field116780=0x101  entry(x=0 y=0)
+[16:56:01.217] field116780=0x102  entry(x=0 y=0)
+[16:56:01.357] field116780=0x103  entry(x=0 y=0)
+[16:56:01.369] field116780=0x104  entry(x=0.9761956 y=-0.21677297)
+               ★entryが初めて非ゼロになった瞬間
+[16:56:01.373]                    entry(x=0.9094516 y=-0.41575366)
+[16:56:01.384]                    entry(x=0.8210089 y=-0.5708792)
+  ...（以降、実際にユーザーがスティックを動かした挙動に
+      追従する連続的な値の変化が続く）
+[16:56:08.812] field116780=0x104（変化なし） entry(x=0 y=0)
+               （セッション終了直前、スティックから手を離した
+                瞬間と推測される）
+```
+
+**CONFIRMED**: `field116780`（102章で「変化検出カウンタ候補」
+とHYPOTHESISとして記録した値）は、`0x100`から`0x101`→
+`0x102`→`0x103`→`0x104`へと、約156ms
+（`16:56:01.213`〜`16:56:01.369`）の間に急速にインクリメント
+し、その**最後の値（`0x104`）に達したのと同一のSTATE-CHANGE
+行で、`entry.x`/`entry.y`が初めて非ゼロ（実際のスティック
+位置を反映した値）に切り替わった**。以降、セッション終了まで
+`field116780`は`0x104`のまま変化せず、entry.x/yはユーザーの
+スティック操作に追従し続けた。
+
+**CONFIRMED**: `cacheCandidate`は本セッション全体を通じて
+一度も非ゼロにならなかった（`grep`で確認、0件）。これは、
+101.2節Step7で確認した「eMode=6（観測されたRSTICKの値）は
+relativeモード計算のビットマスクに該当せず、常にabsolute
+経路を通る」というCONFIRMED済みの分岐と整合する
+（`cacheCandidate`はrelativeモード時のみ更新される、という
+102章のHYPOTHESISと矛盾しない）。
+
+**CONFIRMED**: `field190`はセッション全体を通じて一度も
+変化しなかった（`0x17918D80000`固定）。
+
+### 105.4 判定: H1確定
+
+ユーザー提示の判定基準における**H1**
+（`entry.x/yがDEAD中0→Guide後の特定時点で実値へ変化→その後
+GetAnalogActionData LIVE`）が、明確にCONFIRMEDされた。
+
+これにより、104章で示唆されたHYPOTHESIS
+（「DEAD→LIVE問題はSteam Input層ではなくゲーム側の消費に
+ある」）は、**再テストにより再現しなかった**ことが判明した。
+104章の結果（Guideを押していないのに起動直後からentryが
+非ゼロだった）は、104章自身が正しく指摘していた通り、
+おそらくprobeの観測開始タイミングと実際のGuide操作
+タイミングの前後関係に起因する例外的な観測だった可能性が
+高い。本節（105章）の結果は、85章以来の基本前提（DEAD区間で
+Steam Input側の値もゼロである）と整合する、より典型的で
+再現性の高いパターンである。
+
+### 105.5 次段への強い示唆: `field116780`がwriter追跡の直接的な手がかりに
+
+**CONFIRMED（本節の中心的発見）**: `field116780`の値の
+急増（`0x100`→`0x104`）が、entry.x/yのDEAD→LIVE切替と
+**同一フレームで同期**していた。これは、102章で静的解析
+から得られなかった「entry writerへの手がかり」を、runtime
+観測から直接得られたことを意味する。
+
+**HYPOTHESIS（次段の焦点）**: `field116780`は、
+Guide/Overlay操作（または、それに連動する何らかのSteam
+クライアント側の再初期化イベント）に応じてインクリメント
+される、controller全体に対する世代/シーケンスカウンタで
+あり、このカウンタが特定の閾値または特定の増分パターンに
+達したことが、entry.x/yへの実データ書き込みを許可する
+トリガーとして機能している可能性が高い。ただし、これは
+`field190`同様シンボルによる裏付けがなく、断定はしない。
+
+次段では、`field116780`自体への書き込み元（writer）を
+`steamclient64.dll`内で静的に追跡することが、102章で
+行き詰まったentry.x/y直接追跡よりも、大幅に的を絞りやすい
+形で実施できる可能性が高い。この静的追跡は次章でユーザーと
+合意の上で進める。
+
+本節時点でGit commit/pushは行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 106. `field116780`のwriter静的追跡: 直接write命令は1件のみ、コンストラクタでのゼロ初期化に限られる（J3判定）（2026-09-08）
+
+### 106.1 手法と対象
+
+105章でruntime CONFIRMEDした「`field116780`の`0x100→0x104`
+という急増が、entryのDEAD→LIVE切替と同一フレームで発生した」
+という強い相関を受け、`field116780`（`managedInner+0x116780`）
+への書き込み経路をstatic read-onlyでzero-base追跡した。
+
+**重要な前提の明確化（ユーザー指摘を反映）**: 本節の目的は
+あくまで「`field116780`のwriterの特定」であり、
+「`field116780`の変化がentry更新の**原因**である」ことは
+CONFIRMEDしない。同一の上流イベントが両方を並行して
+更新している可能性も引き続き保持する。
+
+### 106.2 direct write検索結果: 1件のみ
+
+`steamclient64.dll`の`.text`セクション全体（521万命令超）を
+capstoneでread-only逆アセンブルし、displacement`0x116780`を
+参照する全命令を検索した。
+
+**CONFIRMED**: 書き込み（destinationオペランド）は
+**1件のみ**だった:
+
+```
+RVA 0x5D547C: mov qword ptr [rdi + 0x116780], r12
+```
+
+このRVAは97/102章で既に確認済みの**コンストラクタ**
+（RVA `0x5D5429`付近を含む、`self`の多数のフィールドを
+順次ゼロクリアする初期化ブロック）の一部であり、`r12`は
+この文脈で一貫してゼロ値として使われている（同じブロック内で
+`[rdi+0x1730]`・`[rdi+0x109334]`・`[rdi+0x190]`・
+`[rdi+0x28]`等、多数のフィールドが同一の`r12`で
+一括ゼロクリアされている）。すなわちこの書き込みは
+**オブジェクト構築時の一度きりのゼロ初期化**であり、
+`0x100`という初期値、ましてや`0x104`までの増分を
+説明できるものではない。
+
+**CONFIRMED**: 読み取り参照は1件のみ発見された:
+
+```
+RVA 0x601663: lea rsi, [r14 + 0x116780]
+RVA 0x601672: mov edi, dword ptr [rsi]     （97章で既出の文脈、
+                                              間接読み取り）
+```
+
+これは97/102章で既に確認済みの、`+0x109708`周辺を扱う
+「変化検出」関数（RVA `0x601687`付近を含む大きな関数）の
+冒頭部分であり、`field116780`の現在値を`edi`に読み取った上で
+（後続コードで`cmp [rsi], edi`により変化を検出する、
+このレジスタ内容が変わったかを見る側の消費者コードであり、
+書き込み側ではない）。
+
+### 106.3 判定: J3（静的にwriterを特定できず）
+
+ユーザー提示の判定ケースにおける**J3**
+（`field116780`のwriterを静的に特定できない → runtime
+read-onlyで変化時の周辺状態をさらに捕捉する）に該当する
+結果となった。
+
+direct offset（`disp==0x116780`固定）を参照する命令は
+`.text`全体でわずか2件（write 1件・read 1件）しか存在せず、
+そのいずれも105章で観測した`0x100→0x104`という段階的な
+増分を説明しない。これは、96/102章で経験した同種のパターン
+（動的index計算・別モジュール・より複雑なaddressing経路の
+可能性）が、本フィールドについても当てはまることを示唆する。
+
+### 106.4 次段（未実装、提案のみ）
+
+J3の判定に従い、次段はruntime read-onlyでの追加観測を提案
+する。具体的には、105章の`Root26EntryTimelineProbe`を拡張し、
+`field116780`が**変化するフレームそのもの**を、既存の
+「値が変化した時のみSTATE-CHANGEログ」という設計のまま、
+より高頻度・高精度に捉えられているかを再確認しつつ、
+Guide/Overlay操作に関連する既存probe（`Root26Phase5
+OverlayActivatedProbe`等）のログとの、より精密な時間相関
+（ミリ秒単位での前後関係）を取ることが有効と考えられる。
+
+なお、105章で`handle=19680159496504676`・
+`handle=91728467815138660`の両方が同一の`field190`/
+`field116780`値を報告していた点について訂正しておく:
+これは`Root26EntryTimelineProbe`自身の実装（103章）が
+`field190`/`field116780`を`managedInner`から直接（
+controller固有のoffsetを介さず）読む設計になっているため、
+**同一フレーム内では両handleが必然的に同じ値を報告する**
+という、probe自体の設計から自明な結果である
+（entryのみが`controllerSlotIndex`に応じたoffsetを持つ）。
+これは新たな観測事実ではなく、`field116780`が
+「controller単位か・グローバルか」という問い自体への
+判断材料にはならない。
+
+本節は静的解析のみであり、実装・ビルド・デプロイ・runtime
+probeは一切行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 107. `Root26EntryTimelineProbe`を拡張 — `field116780`周辺のraw dump観測を追加、実装・ビルド・デプロイ（2026-09-08）
+
+### 107.1 目的
+
+106章のJ3判定を受け、`field116780`の値そのものの意味を
+推測する代わりに、**`field116780`が変化する瞬間に他に何が
+同時に変化するか**をruntime read-onlyで観測するため、
+`Root26EntryTimelineProbe`（103章）を拡張した。
+
+**重要な前提（ユーザー指摘を反映）**: `field116780`の変化が
+entry更新の原因であるとは断定しない。同一の上流イベントに
+よる並行更新の可能性を引き続き保持する。
+
+### 107.2 実装
+
+- 既存の観測項目（`entry`・`cacheCandidate`・`field190`・
+  `field116780`・`controllerSlotIndex`・`analogActionHandle`）
+  に加え、`managedOuter`（`managedSelfCandidate`）・
+  `inputHandle`を明示的にログへ含めた。
+- `managedInner + 0x116760`〜`+ 0x1167A0`（4byte刻み、17個の
+  32bit word、106.2節のコンストラクタ逆アセンブルで
+  `+0x116775`/`+0x116778`/`+0x116788`等の隣接フィールドも
+  同一ブロックでゼロクリアされていたことを確認済みの範囲）を
+  read-onlyでraw dumpし、`raw<hex offset>`という中立的な名前
+  でログする（意味は一切断定しない）。
+- 既存の「値が変化した時のみSTATE-CHANGEログ」という設計を
+  維持し、summary文字列にraw dump全体を含めることで、
+  raw dump中のいずれかの4byte wordが変化した場合も
+  STATE-CHANGEとして捕捉されるようにした。
+- 既存probe（`Root26Phase5OverlayActivatedProbe`・
+  `Root26ResetControllerCallProbe`・
+  `Root26SteamControllerReStartCallProbe`・
+  `Root26Phase1SteamPadSetCallProbe`・
+  `Root26Phase1UpdateInputCallProbe`等）との時系列相関は、
+  新たな呼び出しを追加せず、既存の`DateTimeOffset.Now:O`
+  タイムスタンプ形式によるログ上の突き合わせのみで行う方針を
+  維持した。
+
+安全性: `Marshal.Read*`のみ使用、`Marshal.Write*`は一切
+使用していない。新規Steam API呼び出しなし、function pointer
+呼び出しなし、状態変更メソッド呼び出しなし、native detour/
+patch/injection/hookなし。
+
+### 107.3 ビルド・デプロイ・ハッシュ確認
+
+`ModMain.cs`の`Root26Phase4NativeRecoveryPoc.Sample()`・
+`Root26Phase8OverlayToStoreOpenPoc.Sample()`の2行がコメント
+アウトされたままであることをビルド前に再確認した
+（本節は既存probeの拡張のみで、`ModMain.cs`自体への変更は
+行っていない）。
+
+`dotnet build -c Release -v q`は0警告・0エラーで成功した。
+ビルド成果物を
+`C:\Program Files (x86)\Steam\steamapps\common\smt3hd\Mods\
+NocturneModernController.dll`へデプロイし、
+ソース側・デプロイ先のSHA-256が完全一致することを確認した
+（`1a63ecc8603f0620a528e2269c865aac4b2c4efd9f307bd1c1e51efc6987f003`）。
+
+本節時点でGit commit/pushは行っていない。次に必要なのは、
+105章と同様の実機プロトコル（Guideを遅めに押す）による、
+`Root26EntryTimeline`のSTATE-CHANGEログの観測である。特に
+`field116780`が`0x101`→`0x102`→`0x103`→`0x104`と遷移する
+各段階で、raw dump中の他のwordが同時に変化しているかを
+重点的に確認する。
+
+判定基準（ユーザー提示、そのまま採用）:
+
+```
+K1: 近傍fieldの一部がfield116780と完全同期して段階的に変化
+→ 同じ内部state blockの可能性。静的にそのfield群を次章で追う。
+
+K2: field116780だけ変化し、entry.x/yが0x104時だけ変化
+→ counterそのものより、0x104到達時の別処理を重点追跡。
+
+K3: 既存observerの特定call/update cycleと毎回同期
+→ そのcall pathを静的に追跡。
+
+K4: 周辺fieldも既存observerも何も同期しない
+→ Steam client内部の別thread/別module更新の可能性が強まり、
+  次にmodule/thread側のread-only観測へ進む。
+```
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 108. 実機テスト結果: 自己訂正含む — `raw11677C`/`raw11678C`は独立した高頻度カウンタと判明、K2寄りの結果（2026-09-08 17:15台）
+
+### 108.1 テスト結果とタイムライン
+
+```
+[17:15:32.478] field116780=0x10E  entry(handle=917...)=(x=0 y=0)
+   （field116780=0x10Eのまま、raw11677C/raw11678Cは
+     0xBCA→0xBCB→...と毎フレーム増加を続ける）
+[17:15:47.693] field116780=0x110  entry(x=0 y=0)  raw1167A0=0x00000000
+[17:15:47.927] field116780=0x111  entry(handle=917..., eMode=0 x=0 y=0
+                bActive=0)  raw1167A0=0x00000101
+[17:15:47.934] field116780=0x112  entry(handle=917...,
+                eMode=6 x=-0.9845576 y=0.17496261 bActive=1)
+                ★entryが実値へ切り替わった瞬間
+```
+
+**CONFIRMED**: 105章と同様のパターン（`field116780`が最後の
+値に達した瞬間にentryがDEAD→LIVEへ切り替わる）が本セッション
+でも再現した。
+
+### 108.2 自己訂正: 当初「K1（近傍fieldの同期変化）」と判断しかけた点を訂正
+
+`field116780=0x10E`のまま長時間（`17:15:32`〜`17:15:47`）
+留まっている区間のログを精査したところ、**`raw11677C`
+（`field116780`の4byte前）と`raw11678C`（`field116780`の
++0xC後）は、`field116780`が全く変化しない間も、`0xBCA`→
+`0xBCB`→`0xBCC`→…と**毎フレーム連続的に1ずつ増加し続けて
+いた**ことが判明した。
+
+**CONFIRMED（訂正後）**: `raw11677C`・`raw11678C`は
+`field116780`と**同期して変化するfield**ではなく、
+`field116780`とは独立した、より高頻度（フレームごと）で
+更新される別のカウンタである（両者は常に同じ値を持つ、
+すなわち`raw11677C`と`raw11678C`同士は同期しているが、
+これは`field116780`の変化とは無関係）。
+
+当初、`field116780`の遷移点周辺のログのみを見て「近傍field
+が同期変化している」とK1的な解釈をしかけたが、より広い範囲の
+ログを確認した結果、これは誤りだった。ユーザーが事前に
+指摘していた通り「`field116780`の変化」と「同期する近傍
+field」という前提そのものを、断定せず広く確認する必要が
+あった。
+
+**CONFIRMED**: `raw1167A0`は、`field116780=0x110`の
+2フレームでのみ`0x00000000`となり（それ以外は常に
+`0x00000101`固定）、一時的な変化を示した。これは101章で
+確認した`+0x1167a0`（trackIndex基準のactiveフラグ配列の
+先頭付近）と近い位置であり興味深いが、`field116780`との
+明確な因果・同期関係はまだCONFIRMEDできていない
+（`field116780=0x111`の時点で既に`0x101`へ戻っており、
+entryの実際のLIVE化（`field116780=0x112`）とは1段階
+ずれている）。
+
+### 108.3 判定: K2寄り
+
+ユーザー提示の判定ケースにおける**K2**
+（`field116780`だけ変化し、entry.x/yが特定の値到達時だけ変化
+→ counterそのものより、到達時の別処理を重点追跡）に近い
+結果となった。`+0x116760`〜`+0x1167A0`のraw dump範囲内には、
+`field116780`と明確に同期する（意味のある）近傍fieldは
+発見できなかった（`raw11677C`/`raw11678C`は独立した高頻度
+カウンタ、`raw1167A0`は単発の変化のみ）。
+
+### 108.4 次段（未実装、提案のみ）
+
+K2の方針に従い、次段では`field116780`という値そのものより、
+**`field116780`がある特定の値（本節では`0x112`、105章では
+`0x104`）に達した「その瞬間」に何が起きるか**を重点的に
+追跡する。具体的な候補:
+
+1. `managedInner+0x109708`（`+0x109708`ゲート、100章で
+   CONFIRMED済み）が、`field116780`の最終遷移と同時に
+   変化するかを確認する（100章のflatSelf向け観測では常に
+   ゼロだったが、managedSelfCandidate側でも同時に観測する
+   価値がある）。
+2. 既存observer（`Root26Phase3PostResetWatchProbe`が追跡する
+   `UpdateConnectedControllers`/`UpdateControl`/
+   `get_action`等のcall count）と、`field116780`最終遷移の
+   タイミングを、より高精度に突き合わせる。
+3. `raw1167A0`の一時的なゼロ化が、他の未観測フィールドとも
+   相関するか、raw dump範囲をさらに広げて確認する。
+
+この実装は次章でユーザーと合意の上で進める。
+
+本節時点でGit commit/pushは行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+## 109. 既存observerとの高精度時系列相関: `LastInputIndex`/`GetCurrentControlDevice()`が最終遷移の直前後で明確な変化を示す（2026-09-08 17:15台）
+
+### 109.1 制約の確認: 105章セッションのログは既に失われている
+
+分析着手前に、`MelonLoader/Latest.log`が上書き専用（各
+ゲーム起動ごとに新しいログで置き換わり、過去セッションを
+アーカイブする仕組みがない）であることを確認した。現在の
+`Latest.log`は`17:15:12`（108章のテストセッション）から
+始まっており、105章のテスト時刻（`16:55`〜`16:56`）の生ログ
+は含まれていない。**したがって、ユーザー提示のL1判定
+（両セッションで同じobserver event/call burstが最終遷移直前に
+出るか）は、105章の生ログが失われているため厳密には実施
+できない。** 本節は108章の1セッションのみでの高精度分析
+として実施し、L1的な強い相関が見つかった場合は、次回
+テストでの再現性確認をもって間接的にL1相当の検証とする
+方針とした。
+
+### 109.2 基準イベントのタイムスタンプ（108章セッション、CONFIRMED）
+
+```
+T1 (field116780: 0x10E→0x110)     : 17:15:47.693
+T2 (field116780: 0x110→0x111)     : 17:15:47.927
+T3=T4 (field116780: 0x111→0x112、
+       entry.x/yが実値へ切り替わる) : 17:15:47.934
+T5 (managed GetAnalogActionDataが
+    初めて実値を返す、i=1 IG_RSTICK
+    handle=917...)                : 17:15:47.933（T3の1ms前）
+```
+
+**CONFIRMED**: T3とT4は同一フレーム（`17:15:47.934`）で
+発生した。T5はT3のわずか1ms前であり、実質的に同一の
+更新サイクル内の出来事である。
+
+### 109.3 T1直後に既存observerで発見した強い相関イベント
+
+```
+[17:15:47.693] field116780: 0x10E → 0x110  （T1）
+[17:15:47.715] Root26SteamState STATE-CHANGE
+               LastInputIndex 1 -> -1        （T1の+22ms）
+[17:15:47.716] Root26SteamPadState STATE-CHANGE
+               GetCurrentControlDevice() XInput -> Keyboard
+                                              （T1の+23ms）
+```
+
+**CONFIRMED**: `field116780`が`0x10E`から動き出した直後
+（22〜23ms後）、既存probe（`Root26SteamStateProbe`・
+`Root26SteamPadStateProbe`）が観測する`LastInputIndex`と
+`GetCurrentControlDevice()`が、それぞれ「入力なし（`-1`）」
+「Keyboardへのフォールバック」を示す値へ変化した。これは、
+ゲーム側が一時的に「コントローラからの入力が途絶えた」と
+検出したことを示唆する（HYPOTHESIS、断定しない）。
+
+### 109.4 T3/T4/T5直後に発見した復帰イベント
+
+```
+[17:15:47.933] managed GetAnalogActionData i=1(IG_RSTICK)
+               state=ACTIVE-NONZERO x=-0.9845576 y=0.17496261
+                                              （T5）
+[17:15:47.934] field116780: 0x111 → 0x112     （T3=T4）
+[17:15:47.948] Root26Phase1 STATE-CHANGE
+               SetAnalog i=1(IG_RSTICK) -> CalledActive
+               dx=-0.9845576 dy=0.17496261    （T3の+14ms、
+               GameAssembly側native SetAnalog呼び出し、
+               ネイティブ側へ実データが渡った瞬間）
+[17:15:47.951] Root26SteamState STATE-CHANGE
+               LastInputIndex -1 -> 1         （T3の+17ms）
+```
+
+**CONFIRMED**: `field116780`の最終遷移（`0x111→0x112`）と
+ほぼ同時にmanaged `GetAnalogActionData`が実値を返し始め、
+その約14ms後にGameAssembly側の`SetAnalog`が実際に
+呼ばれ（既存の`Root26Phase1SetAnalogProbe`が観測）、
+その約17ms後に`LastInputIndex`が`-1`から`1`へ回復した。
+すなわち、109.3節の「入力途絶検出」から109.4節の
+「入力復帰・LastInputIndex回復」までの期間
+（`17:15:47.715`〜`17:15:47.951`、約236ms）が、
+`field116780`の`0x10E→0x112`という一連の遷移の全期間と
+ほぼ重なっている。
+
+### 109.5 `ResetController`/`SteamControllerReStart`との相関（L3該当、ただし判定文を訂正）
+
+同一セッションで`SteamControllerReStart()`は起動時
+（`17:15:25.726`・`17:15:25.732`、count=1・2）にのみ呼ばれて
+おり、その後は本セッション終了まで一度も呼ばれていない。
+すなわち`field116780`の最終遷移（`17:15:47.6`〜`.95`）とは
+**約22秒の間隔**があり、直接同期していない。
+
+**判定（訂正版）**: CONFIRMEDなのは
+`Reset/ReStartはLIVE化の約22秒前に発生しており、最終遷移とは
+直接同期しない`ところまでである。当初「Reset/ReStartは
+トリガーだが、実際のLIVE化は後続非同期処理」と記述したが、
+これは22秒という間隔の大きさに対してやや踏み込みすぎた
+表現だった（ユーザー指摘により訂正）。`Reset/ReStart`が
+DEAD→LIVE遷移の上流トリガーとして機能しているのか、単なる
+起動時初期化処理であり本現象とは無関係なのかは、
+**UNRESOLVED**とする。
+
+### 109.6 `managedInner+0x109708`（100章のゲート）の同時観測
+
+同一ログ行（`Root26AnalogDataSelfSwap`のSTATE-CHANGE）に
+含まれる`chapter99(...)`セクションから確認したところ、
+`managedField(inner+0x109708)`は、T1以前（`17:15:47.692`、
+`0x0006C476`）からT3/T4（`17:15:47.934`、`0x00159168`）に
+かけて変化していた。これは`effectiveR8`（`0x00159168`固定）
+と一致するようになったタイミングが、T2（`0x110→0x111`、
+`17:15:47.927`）付近であったことを示す
+（`17:15:47.692`時点では`effectiveR8==managedField:False`、
+`17:15:47.927`時点では`effectiveR8==managedField:True`）。
+これは100章で確認した「100/109708ゲート通過」が、
+`field116780`の遷移過程のどこかで再確立されていることを
+示す新しい相関だが、`field116780`自体との厳密な同時性
+（同一フレームか、数フレームのラグがあるか）は本節時点では
+未確定であり、UNRESOLVEDとする。
+
+### 109.7 判定: 108章セッション内ではL1相当の強い相関を発見（2セッション比較は次段の課題）
+
+ユーザー提示のL1/L2/L3のうち、`ResetController`/
+`SteamControllerReStart`については「最終遷移の約22秒前に
+発生し、直接同期しない」という限定的な意味でL3に近いが、
+Reset/ReStartが上流トリガーかどうか自体はUNRESOLVEDである
+（109.5節参照、判定文訂正済み）。
+一方、`LastInputIndex`/`GetCurrentControlDevice()`という
+既存observerが、`field116780`の遷移開始・終了それぞれの
+直後（22ms・17ms）に明確な変化を示すという、L1的な強い
+相関を本セッション単独で発見した。109.1節の制約により
+105章との2セッション比較はできていないため、この相関が
+セッションをまたいで再現するかどうかは次回テストで確認する
+必要がある。
+
+### 109.8 次段（未実装、提案のみ）
+
+`LastInputIndex`/`GetCurrentControlDevice()`を観測している
+既存probe（`Root26SteamStateProbe`・`Root26SteamPadStateProbe`）
+の実装箇所（どのmanaged/nativeフィールドを読んでいるか）を
+静的に再確認し、この値がどこで更新されるか
+（`GetCurrentControlDevice`のGameAssembly側実装、または
+Steam Input側）を追跡することが、次のwriter静的追跡の
+候補として有望である。次回の実機テストで、105章と同様の
+手順を再度行い、`LastInputIndex -1→1`という遷移が
+`field116780`の最終遷移と再現性を持って同期するかを
+まず確認することも、次段として提案する。
+
+本節時点でGit commit/pushは行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+
+## 110. DEAD→LIVE遷移と入力デバイス一時切断/復帰の再現性確認（実機テスト待ち・コード変更なし）
+
+### 110.1 背景と目的
+
+Chapter109で108章セッション単独から、以下の時系列を
+CONFIRMEDした（すべて同一セッション内の観測）。
+
+```text
+field116780 遷移開始 (T1)
+    ↓ +22ms
+LastInputIndex 1 -> -1
+    ↓ +1ms
+GetCurrentControlDevice XInput -> Keyboard
+
+約200ms
+
+managed GetAnalogActionData RSTICK = physical values
+field116780 最終遷移 (T3=T4)
+    ↓ +14ms（state-change observer記録時刻ベース）
+SetAnalog CalledActive
+    ↓ +17ms（同上）
+LastInputIndex -1 -> 1
+```
+
+ただしChapter105の生ログは`Latest.log`の上書きにより既に
+失われており、**セッション間の再現性は未確認**である
+（109.1節）。静的writer追跡（`LastInputIndex`/
+`GetCurrentControlDevice()`の更新元）に進む前に、この
+「一時的なdevice loss/reacquisition-like transition」パターンが
+毎回発生するのかを、まず実機再テストで確認する方針とした
+（ユーザー指示）。
+
+### 110.2 運用上の教訓: `Latest.log`上書き問題への対応
+
+`MelonLoader\Latest.log`は起動ごとに上書きされ、過去セッションの
+アーカイブが残らないことがChapter109で判明した。今後Root26の
+実機テストを行う際は、**テスト終了直後・解析着手前に**、
+`Latest.log`をタイムスタンプ付きでコピーして保存する運用に
+変更する。保存先は次のディレクトリとする。
+
+```text
+investigations\ROOT26_LOGSRoot26_Chapter<N>_<YYYY-MM-DD>_<HHMMSS>.log
+```
+
+このディレクトリはGit管理対象にする必要はない
+（`.gitignore`等での明示的な除外は今回は行わず、単に
+`git add`対象として選ばないことで対応する）。
+
+### 110.3 最優先事項: コード変更なしで再テストを1回実施
+
+新しいprobeの追加や既存probeの変更は**行わない**。現在
+デプロイ済みの観測用probe群（chapter107時点のビルド、
+SHA-256 `1a63ecc8603f0620a528e2269c865aac4b2c4efd9f307bd1c1e51efc6987f003`
+の`Root26EntryTimelineProbe.cs`を含む一式）のまま、以下の
+手順でユーザーに実機テストを依頼する。
+
+```text
+通常起動
+→ explorationでRSTICK DEAD確認
+→ 少し待つ
+→ Guide
+→ Overlayを閉じる
+→ RSTICKを動かし続けLIVE確認
+→ 数秒維持
+→ 終了
+```
+
+ユーザーから`TESTOK`を受けたら、**解析より先に**
+`MelonLoader\Latest.log`を110.2節のディレクトリへ
+timestamp付きでコピーして保存する。
+
+### 110.4 比較対象・時系列化する項目
+
+Chapter109と同じ基準で、以下を時系列化する。
+
+- `field116780`
+- `managedInner+0x109708` / `effectiveR8`
+- managed entry (`eMode`/`x`/`y`/`bActive`)
+- managed `GetAnalogActionData`
+- `LastInputIndex`
+- `GetCurrentControlDevice()`
+- `SetAnalog`
+- `ResetController`
+- `SteamControllerReStart`
+- `OverlayActivated`
+
+### 110.5 判定フレームワーク（ユーザー提示、そのまま採用）
+
+**M1**: 再び
+`LastInputIndex 1→-1` → `GetCurrentControlDevice XInput→Keyboard`
+→ ... → `LastInputIndex -1→1`
+が`field116780`遷移期間と重なる場合、
+「一時的なdevice loss/reacquisition-like transition」が
+DEAD→LIVEに伴う再現性ある現象としてSTRONGへ昇格する。
+
+**M2**: `field116780`/entry LIVEは再現するが、
+`LastInputIndex`/`GetCurrentControlDevice()`の切断復帰が
+起きない場合、Chapter109のdevice transitionは付随現象と
+みなし、writer追跡の優先度を下げる。
+
+**M3**: device transitionがentry LIVEより前に毎回起き、
+その後`+0x109708`ゲート再成立→entry LIVEとなる場合、
+reacquisition/update pipelineを主対象にstatic追跡する。
+
+### 110.6 注意事項（過度な因果断定の回避）
+
+- `GetAnalogActionData`が`field116780`より1ms先に見えた点は、
+  同一フレーム内のprobe実行順序の影響を排除できないため、
+  1ms差から因果順序を断定しない。
+- `SetAnalog +14ms`/`LastInputIndex +17ms`もstate-change
+  observerの記録時刻ベースであり、machine-levelでその
+  遅延が実際に生じたと断定しない。
+- Reset/ReStartについては、109.5節で訂正した通り
+  「最終遷移の約22秒前で直接同期しない」までがCONFIRMEDで
+  あり、「Reset/ReStartが上流トリガーである」ことは
+  UNRESOLVEDのままとする。
+
+### 110.7 現状
+
+本節時点で実機再テストは未実施。ユーザーからの`TESTOK`
+連絡を待つ。新規state-changing呼び出しは追加しない。
+ビルド・デプロイも本節では行わない（既存デプロイ済みDLLを
+そのまま使用する）。
+
+本節時点でGit commit/pushは行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+
+## 111. Chapter110再テスト結果: device loss/reacquisition-likeパターンは再現したが、Overlayイベントが観測されず（要ユーザー確認）
+
+### 111.1 ログ保存
+
+`TESTOK`受領後、解析前に生ログを保存した。
+
+```text
+保存先: investigations\ROOT26_LOGS\Root26_Chapter110_2026-09-08_174448.log
+SHA-256: 29d33d52a6398c0e9e47bca513761e2099f6423e2aaf9680af26e2f7fd7a7000
+（コピー元 MelonLoader\Latest.log と一致確認済み）
+セッション範囲: 17:43:58.371（MelonLoader起動） 〜 17:44:48.477（終了）
+```
+
+### 111.2 field116780の遷移とentry LIVE化（CONFIRMED、105/108章と同型）
+
+```text
+T1 (0x11C→0x11D): 17:44:31.085
+T2 (0x11D→0x11E): 17:44:31.090
+T3 (0x11E→0x11F): 17:44:31.274
+T4 (0x11F→0x120、entry(RSTICK) x/yが実値へ切り替わる開始点): 17:44:31.278
+```
+
+このテストでも、探索開始からentry LIVE化までの間、
+`entry(eMode=6 x=0 y=0 bActive=1)`（`bActive`は`1`のまま、
+x/yのみが厳密に`0`）が17:44:12.236（プローブ観測開始）〜
+17:44:31.278まで継続していた。これは105/108章と同じ
+「bActiveではなくx/y自体がDEAD/LIVEの実質的な指標」という
+既存の理解と整合する。
+
+### 111.3 既存observerとの相関（CONFIRMED、108章とほぼ同じ遅延量で再現）
+
+```text
+T1 (17:44:31.085)
+    ↓ +24ms
+LastInputIndex 1 -> -1        (17:44:31.109)
+    ↓ 同時刻
+GetCurrentControlDevice() XInput -> Keyboard  (17:44:31.1099)
+
+約193ms
+
+T4 (17:44:31.278、entry LIVE化開始)
+    ↓ +20ms
+SetAnalog i=1(IG_RSTICK) -> CalledActive      (17:44:31.298)
+    ↓ +3ms
+LastInputIndex -1 -> 1        (17:44:31.301、同時刻に
+                                GetCurrentControlDevice()
+                                Keyboard -> XInputも記録)
+```
+
+**CONFIRMED**: Chapter108セッション（T1+22ms/+23ms、
+T3/T4+14ms/+17ms、全体約236ms）とほぼ同じ規模の遅延量・
+順序で、`LastInputIndex`/`GetCurrentControlDevice()`の
+一時的な切断→復帰パターンが**再現**した（今回は全体で
+約216ms）。これは109章のM1判定基準
+（`LastInputIndex 1→-1` → `GetCurrentControlDevice
+XInput→Keyboard` → ... → `LastInputIndex -1→1`が
+`field116780`遷移期間と重なる）を満たす。
+
+`SteamControllerReStart()`は本セッションでも起動時
+（`17:44:11.975`・`17:44:11.982`）にのみ呼ばれており、
+T1（`17:44:31.085`）とは**約19.1秒**の間隔があった。109.5節の
+訂正判定（Reset/ReStartが上流トリガーか、単なる起動時初期化
+かはUNRESOLVED）は本セッションでも変更する材料がない。
+
+### 111.4 重大な相違点: `Root26Phase5`（Overlayコールバック）が一度も発火していない
+
+**CONFIRMED（重要・要ユーザー確認）**: 本セッションの
+ログ全体を検索したが、`Root26Phase5`
+（`OnGameOverlayActivated`のHarmonyプローブ、
+`OVERLAY-ACTIVATED-CALLBACK`ログ）は**1件も出力されていない**
+（`grep -c "Root26Phase5"` = `0`）。Harmonyパッチ自体の
+登録失敗を示すエラーログも見当たらない。
+
+105章・108章のテストでは、いずれもユーザーが明示的に
+Guideボタンを押してOverlayを開き、それを閉じる操作を
+行っており、そのタイミングが分析の起点になっていた。今回の
+Chapter110テストでは、109.4節・110.3節で依頼した手順通り
+「Guide → Overlayを閉じる」操作を行っていただく想定だったが、
+**ログ上はOverlayが一度も開閉された形跡がない**。
+
+これは以下のいずれかを意味しうる（いずれもHYPOTHESIS、
+断定しない）。
+
+- (a) 今回のテストでGuide/Overlay操作を行わなかった、
+  または行うタイミングが手順と異なった。
+- (b) Guideは押されたが、何らかの理由でSteam Overlayが
+  実際には開かず（Big Picture設定、Overlay無効化設定等）、
+  ネイティブコールバック自体が発火しなかった。
+- (c) Guide/Overlay操作とは無関係に、
+  `field116780`進行・device loss/reacquisition-likeパターンが
+  自発的に発生した。
+
+(c)が事実であれば、これまでの作業仮説
+（「Guide後のOverlay終了処理がDEAD→LIVE遷移のトリガーで
+ある」）に対する重要な反証となりうるため、断定を避け、
+**ユーザーに実際の操作内容を確認する必要がある**。
+
+### 111.5 判定: M1条件は満たすが、Overlay不在のため上位仮説への適用は保留
+
+109章のM1/M2/M3判定基準のうち、`LastInputIndex`/
+`GetCurrentControlDevice()`の切断復帰パターンが
+`field116780`遷移期間と重なるという**M1の条件自体はCONFIRMED
+（2セッション目で再現）**である。しかし、このM1が
+「Guide/Overlay操作に伴うreacquisition-likeパターン」の
+再現なのか、「Guide/Overlayとは無関係に発生する現象」なのかは、
+111.4節のOverlayイベント不在により**UNRESOLVED**とする。
+
+### 111.6 次段: ユーザーへの確認事項
+
+以下をユーザーに確認してから、静的writer追跡や次回テストの
+方針を決定する。
+
+1. Chapter110テストの実施時、実際にGuideボタンを押した
+   か・Overlayが実際に開いた（画面上でオーバーレイUIが
+   表示された）か。
+2. 押した場合、およそ何時何分頃だったか（ログの
+   `17:44:31`前後かどうかの確認に使う）。
+3. 押していない場合、探索開始からLIVE化までの間に、何か
+   他の操作（アルトタブ、Steamウィンドウ操作、コントローラの
+   抜き差し等）を行ったか。
+
+本節時点でGit commit/pushは行っていない。新規state-changing
+呼び出しは追加していない。ビルド・デプロイも本節では行って
+いない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+
+## 112. ユーザー証言: 「右スティックを動かしながらGuideを押すとOverlayへ行かず、そのままRSTICKが復活する」（111.4節の疑問への回答）
+
+### 112.1 証言内容（ユーザー原文）
+
+> んと右スティックを動かしながらガイドを押すと、オーバーレイに
+> 行かずそのまま右スティックが復活するんだわ。。。
+
+これは111.6節でユーザーに確認を依頼していた「Chapter110
+テストで実際にGuideを押したか」への回答である。111.4節で
+提示した3つの仮説のうち、**(b)「Guideは押されたが、何らかの
+理由でOverlayが実際には開かず、コールバック自体が発火
+しなかった」に該当する具体的な操作条件（RSTICKを動かし
+ながらGuideを押す）が、ユーザー自身の実機操作経験として
+判明した**。
+
+### 112.2 この証言が示すこと（CONFIRMED: ユーザー報告として）
+
+- RSTICKを**動かしていない**状態でGuideを押す
+  → Overlayが開く（105章・108章の手順はこちらに該当していた
+  可能性が高い）。
+- RSTICKを**動かしながら**Guideを押す
+  → Overlayへ遷移せず、そのままRSTICKの入力が復活する
+  （Chapter110のテストはこちらだった可能性が高い）。
+
+これはSteam Input側の一般的な仕様として、アナログスティック
+入力中のGuideボタン長押し/短押しの扱いが、Big Picture/
+Overlay起動判定に影響する可能性を示唆する
+（HYPOTHESIS。Steam公式の正確な仕様は未確認であり、断定
+しない）。
+
+### 112.3 Chapter110/111の結果の再解釈
+
+Chapter110/111で観測した「Overlayコールバックが1件も
+発火していないのに、`field116780`遷移・
+`LastInputIndex`/`GetCurrentControlDevice()`の切断復帰
+パターンが105/108章とほぼ同じ規模・順序で再現した」という
+結果は、本証言と整合する。すなわち：
+
+**改訂された作業仮説（HYPOTHESIS、まだCONFIRMEDではない）**:
+DEAD→LIVE遷移のトリガーは「Steam OverlayのUI表示/非表示
+そのもの」ではなく、**「Guideボタン押下がSteam Input側で
+処理されるイベント自体」**である可能性が高まった。Overlayが
+実際に開くかどうかは、その時点でアナログスティックが動いて
+いるかどうかという副次的な条件で決まる別の分岐であり、
+DEAD→LIVE遷移の必要条件ではないかもしれない。
+
+ただし、これは今のところ以下の理由でCONFIRMEDにはできない。
+
+- Chapter110/111のテストで「Guideを実際に押した正確な時刻」
+  をログとして記録していない（Guide自体を検出する既存
+  observerが今のところ存在しない）。
+- 105章・108章では「Overlayが開いた」ことは
+  `Root26Phase5`ログで直接確認できたが、Guide押下**そのもの**
+  の時刻は、それらのセッションでも直接記録されたことはなく、
+  常に「Overlayコールバック発火時刻」を代理指標として使って
+  きた。今回、その代理指標が使えないケースが判明したため、
+  Guide押下自体を直接観測する手段が必要になった。
+
+### 112.4 今後の方針（提案、未実装）
+
+105章・108章・110章いずれの場合も、Guideボタン自体の押下を
+直接ログに残せていない（Overlayコールバックか、
+ユーザーの目視申告に頼ってきた）。より正確な相関を取るには、
+Guideボタン押下イベント自体を検出する既存の安全な手段が
+あるかを確認する必要がある。
+
+**安全制約の再確認**: Guide入力の偽装・SendInput・
+Steamバイナリのpatch/injection/hookは引き続き禁止である。
+ここで提案するのはあくまで**読み取り専用**の観測手段の
+静的調査であり、能動的にGuideボタンの状態を取得する新規
+API呼び出しを追加する場合も、既存の許可されたAPI
+（`steam_api64.dll`の公開ゲッター等）の範囲内かどうかを
+事前に確認し、ユーザーの合意を得てから実装する。
+
+この節では新規コードの実装は行わない。次段としてユーザーに
+方針を確認する。
+
+本節時点でGit commit/pushは行っていない。新規state-changing
+呼び出しは追加していない。ビルド・デプロイも本節では行って
+いない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+
+## 113. `LastInputIndex`/`GetCurrentControlDevice()`の切断→復帰経路をGameAssembly.dllから直接静的追跡（read-only、zero-base）
+
+### 113.1 方針変更(ユーザー指示)
+
+ユーザー指示により、Guide押下を直接検出する新規probeの実装は
+**保留**とし、代わりに既存で確認済みの
+`LastInputIndex`/`GetCurrentControlDevice()`の切断→復帰経路
+(105/108/110章で繰り返し観測された`XInput→Keyboard→XInput`
+パターン)そのものを、GameAssembly.dllの実バイナリから
+**read-onlyで静的追跡**する方針に切り替えた。この章では
+一切の実装・ビルド・デプロイを行っていない。
+
+使用ツールは既存セッションで生成済みの以下2種類(いずれも
+ユーザープロファイル配下の一時ディレクトリに保存されており、
+git管理下にはない。読み取り専用の静的解析であり、
+ゲーム本体・save data・controller stateへの書き込みは
+一切行っていない)。
+
+- `C:\tmp_cpp2il_out\IsilDump`(Cpp2IL `callanalyzer`、
+  `--output-as isil`。GameAssembly.dllの逆コンパイルによる
+  疑似アセンブリ、命令列は保持するがアドレス情報は持たない)
+- `C:\tmp_cpp2il_out2\DiffableCs`(Cpp2ILの`diffable-cs`出力。
+  C#疑似ソースへ再構成されており、**フィールドオフセットが
+  コメントとして直接埋め込まれている**)
+- 加えて、`GameAssembly.dll`本体を`pefile`+`capstone`で直接
+  逆アセンブルし、ISILが示す呼び出し先アドレス(RVA)の実際の
+  x64命令列を確認した(これまでの章と同一手法)。
+
+### 113.2 `LastInputIndex`のフィールドオフセット - CONFIRMED
+
+`C:\tmp_cpp2il_out2\DiffableCs\Assembly-CSharp\SteamInputUtil.cs`
+に、Cpp2ILが再構成した`SteamInputUtil`の全フィールド定義が
+オフセット付きで含まれていた。
+
+```csharp
+public bool bSynthetic;         //Field offset: 0x20
+public int Resume;              //Field offset: 0x24
+public int LastInputIndex;      //Field offset: 0x28
+public int LastInputIndex_OLD;  //Field offset: 0x2C
+public ulong CurrentInputID;    //Field offset: 0x30
+public int PadConnectDiff;      //Field offset: 0x38
+public int PadConnectMax;       //Field offset: 0x3C
+```
+
+**CONFIRMED**: `LastInputIndex`は`SteamInputUtil`インスタンスの
+`+0x28`(10進40)に配置されている。
+
+### 113.3 `GetCurrentControlDevice()`の内部ロジック - CONFIRMED
+
+`SteamPad.txt`(`C:\tmp_cpp2il_out\IsilDump\Assembly-CSharp\
+SteamPad.txt`、1949行目)のISILは次の通り。
+
+```text
+Method: EControlType GetCurrentControlDevice()
+  ...
+  016 Call 0x1825FC4B0, rcx           ; SteamInputUtil.get_Instance()
+  017 Compare rax, 0
+  018 JumpIfEqual 031 ...              ; instance==null -> 例外throwヘルパー
+  019 Move rdx, [rax+40]               ; rdx = instance.LastInputIndex
+  020 Compare rdx, 18446744073709551615  ; == -1 ?
+  021 JumpIfEqual 027 Move rax, 0      ; -1なら rax=0 のまま return
+  022 Move r8, 0
+  023 Move rcx, rbx                    ; rcx = SteamPad(this)
+  026 Call 0x182602A90, rcx, rdx, r8   ; GetControlDevice(LastInputIndex)相当
+  027 Move rax, 0
+  030 Return rax
+```
+
+`SteamInputUtil::get_Instance()`のRVA `0x25FC4B0`は、78章で
+既にCONFIRMED済みの値と完全一致する。
+
+`EControlType`列挙は`DiffableCs`で以下の通り確認済みである。
+
+```csharp
+public enum EControlType
+{
+    Unknown = -1,
+    Keyboard = 0,
+    Steam = 1,
+    XInput = 2,
+    ...
+}
+```
+
+**CONFIRMED(本調査の核心)**: `GetCurrentControlDevice()`は
+`SteamInputUtil.instance.LastInputIndex`(`+0x28`)を直接読み、
+**厳密に`-1`のときに限り無条件で`EControlType.Keyboard`(`0`)
+を返す**。それ以外の値のときは`SteamPad.GetControlDevice
+(LastInputIndex)`(RVA `0x182602A90`)へ委譲する。
+
+これにより105/108/110章で繰り返し観測された
+`GetCurrentControlDevice() XInput -> Keyboard -> XInput`は、
+**`LastInputIndex`が一時的に`-1`になり、その後有効な
+コントローラindexへ復帰する現象の直接的な副産物である**ことが
+GameAssembly.dllの実バイナリからCONFIRMEDされた。すなわち
+`LastInputIndex`と`GetCurrentControlDevice()`は独立した2つの
+現象ではなく、**後者は前者の単純な派生値**である。
+
+### 113.4 `LastInputIndex`の書き込み元 - `SteamInputUtil.UpdateInput()`内に2箇所、CONFIRMED
+
+`SteamInputUtil.txt`のISIL全体を`+40]`(オフセット`0x28`)で
+横断検索し、書き込みが集中する`UpdateInput()`
+(毎フレーム呼ばれる、308行目まで続くメインループの一部と
+してのメソッド、171行目開始)の内部を精査した。
+
+#### 113.4.1 復帰パス(`LastInputIndex`を有効なindexへ設定)
+
+ISIL 093〜111行目付近(controller index `rdi`を`0`から
+`r13`未満までインクリメントするループの内部):
+
+```text
+093 Move rcx, [rsi+80]                 ; rcx = this+0x80 (コントローラ関連リスト)
+096 JumpIfEqual 322 ...                 ; null check
+099 Call 0x182602F30, rcx, rdx=rdi, r8=0  ; index=rdiに対応する
+                                          ; コントローラオブジェクトを取得
+107 Move [rcx+32+r15*8], rax           ; 取得結果をactionハンドル配列へ保存
+108 Compare rax, 0
+109 JumpIfEqual 127 ...                 ; 取得失敗(rax==0)ならスキップ
+111 Move [rsi+40], rdi                 ; LastInputIndex = rdi(このループのindex)
+```
+
+**CONFIRMED**: ループ変数`rdi`(現在走査中のコントローラ
+index、`0`起算)について、対応するコントローラオブジェクトの
+取得(RVA `0x182602F30`)が成功した場合、`LastInputIndex`は
+その`rdi`へ設定される。すなわち「有効なコントローラが
+見つかった時点のindex」が`LastInputIndex`として書き込まれる。
+
+#### 113.4.2 強制無効化パス(`LastInputIndex`を`-1`へ設定)
+
+ループを抜けた後(237〜252行目付近):
+
+```text
+237 Compare [rsi+32], 0
+238 JumpIfEqual 298 ...                 ; [rsi+32]==0ならこのブロック全体をスキップ
+243 Call 0x1825FBC50, rcx=rsi, rdx=&stack:0x50, r8=0
+244 Move rbx, stack:0x50                ; 呼び出し結果を取得
+245 Compare rbx, 0
+246 JumpIfEqual 268 ...                 ; 結果が0(false相当)ならこのブロックを抜ける
+247 Compare [rsi+40], 18446744073709551615   ; 現在のLastInputIndexが既に-1か?
+248 JumpIfEqual 252 ...                 ; 既に-1ならそのまま252へ
+249 Move rdx, 0
+250 Move rcx, rsi
+251 Call 0x1825F7410, rcx, rdx=0        ; 副作用呼び出し(113.5節参照)
+252 Move [rsi+40], 0xFFFFFFFF           ; LastInputIndex = -1
+```
+
+**CONFIRMED**: `UpdateInput()`内で、ある条件(`0x1825FBC50`の
+戻り値が非0)が成立すると、`LastInputIndex`は無条件で`-1`へ
+上書きされる。かつ、その直前の値が**既に`-1`でなかった場合に
+限り**、`0x1825F7410`という別関数が`(this, false)`相当の引数で
+1回呼ばれる(既に`-1`だった場合はこの副作用呼び出しは
+スキップされ、直接`-1`が再書き込みされるのみ)。
+
+### 113.5 `0x1825FBC50`・`0x1825F7410`の構造調査 - HYPOTHESIS(名前の確定はUNRESOLVED)
+
+`GameAssembly.dll`を直接capstoneで逆アセンブルし、両関数の
+実際のx64命令列を確認した。
+
+**`0x1825FBC50`(RVA `0x25FBC50`)**: `[this+0x70]`
+(コントローラ関連リスト、113.4.1節の`rsi+0x80`とは別フィールド)
+を2つのindex(`0x1820365a0`が返す2値、初期値`-1,-1`)について
+走査し、各indexに対応するコントローラハンドルへ対して
+`0x181494740`・`0x1825f79b0`・`0x1825f69a0`
+(第3引数`r8d=3`)という一連の呼び出しを行い、`0x1825f69a0`が
+返す16bit値(`1`〜`0x19`の範囲であることをチェック)から
+ビットマスクを構築し、最終的に呼び出し元が渡した参照引数
+(`[r12]`)へ`OR`で書き込む、という構造だった。
+
+`SteamInputUtil`には`combine_buttonguide(ref System.UInt64 key)`
+という同種のシグネチャ(`ref`引数へビットマスクを合成する)の
+メソッドが存在する(DiffableCs/ISILのメソッド一覧より)。
+`0x1825FBC50`の構造(ref引数へのOR書き込み、controller
+handleごとのbit構築ループ)はこれと**類似する**が、ISIL上の
+呼び出し引数が3つ(`rcx, rdx, r8`)観測されており、
+`combine_buttonguide(ref ulong)`の想定シグネチャ
+(`this`+`ref key`の2引数)と数が一致しない。したがって
+**`0x1825FBC50 == combine_buttonguide`という同一性は
+HYPOTHESISに留め、CONFIRMEDとしない**。
+
+なお、`ButtonGuide`という名称は、9章までの調査で確認した
+`ButtonGuideDispOn/Off`等の文字列群と同じく、**画面上の
+ボタン操作案内UI(「Aボタンで決定」等のアイコン表示)**を
+指す可能性が高く(HYPOTHESIS)、Steamハードウェアの
+物理Guideボタンとは無関係な可能性がある。この点は
+慎重に扱う必要がある。
+
+**`0x1825F7410`(RVA `0x25F7410`)**: `[this+0x18]`を
+コレクションとして走査し、各要素に対して`0x182355c70
+(element, 0)`相当の呼び出しを行うループ構造だった。
+`SteamInputUtil`の`+0x18`は、113.2節のDiffableCs定義より
+**`CollidersRecv`(`List<SteamCollidersReceiver>`)** である
+ことがCONFIRMED済み。メソッド一覧には
+`System.Void AllCollidersEnable(System.Boolean sw)`が存在し、
+「`CollidersRecv`の各要素へ`sw`を伝播する」という典型的な
+実装パターンと一致する。したがって、**`0x1825F7410`は
+`AllCollidersEnable(false)`である可能性が高い
+(HYPOTHESIS)**が、`0x182355c70`側の実装まで踏み込んで
+確認したわけではないため、CONFIRMEDとはしない。
+
+### 113.6 総合評価
+
+CONFIRMEDの範囲を整理すると次の通り。
+
+1. `GetCurrentControlDevice()`の`XInput⇔Keyboard`切り替えは、
+   `LastInputIndex`(`SteamInputUtil+0x28`)が`-1`かどうかの
+   単純な派生であり、独立現象ではない(CONFIRMED)。
+2. `LastInputIndex`は`UpdateInput()`内の1箇所で、コントローラ
+   オブジェクト取得成功時(`0x182602F30`成功時)に、その
+   ループindexへ復帰する(CONFIRMED)。
+3. `LastInputIndex`は`UpdateInput()`内の別の1箇所で、ある
+   条件(`0x1825FBC50`の戻り値が非0)が成立すると強制的に
+   `-1`へ上書きされ、直前の値が有効だった場合は追加で
+   `0x1825F7410`が呼ばれる(CONFIRMED)。
+4. `0x1825FBC50`・`0x1825F7410`の正確な意味・名前は
+   HYPOTHESISに留まる。`0x1825F7410`は`CollidersRecv`
+   フィールドオフセット一致から`AllCollidersEnable(false)`
+   である可能性が高いが、これは主にUI(コライダー)機構への
+   影響であり、RSTICKのデータ経路(`entry.x/y`、
+   `field116780`)への直接的な書き込み経路とは、現時点では
+   **接続が確認できていない**(UNRESOLVED)。
+
+すなわち、`LastInputIndex`/`GetCurrentControlDevice()`の
+切断→復帰経路そのものはGameAssembly.dllから正確に
+特定できたが、**この経路がChapter90以降追跡してきた
+`entry.x/y`・`field116780`の実体(Steam Input側、
+steamclient64.dll内のオブジェクト)とどう繋がっているのかは、
+まだ未解決のまま**である。`UpdateInput()`は`SteamInputUtil`
+(Assembly-CSharp、ゲーム側マネージドクラス)の毎フレーム処理
+であり、これまで78章以降追跡してきた`managedInner`
+(steamclient64.dll内のISteamInput実装オブジェクト)とは
+別レイヤーである。両者を繋ぐには、`0x1825FBC50`・
+`0x1825F7410`、あるいは`0x182602F30`
+(コントローラオブジェクト取得)が、最終的に
+`ISteamInput::GetAnalogActionData`側のどのAPIを呼んでいるかを
+さらに追う必要がある。
+
+### 113.7 次段(未実装、提案のみ)
+
+以下のいずれかを次段候補として提示する。ユーザーの指示を
+待ってから着手する。
+
+- (a) `0x182602F30`(コントローラオブジェクト取得、
+  復帰パスの成功判定に使われる)をさらに逆アセンブルし、
+  ここがSteam Input側のAPI(`ISteamInput::GetConnectedControllers`
+  相当)を直接呼んでいるかを確認する。
+- (b) `0x1825FBC50`の戻り値を決める条件
+  (`0x1825f69a0`が返す「1〜0x19の範囲の値」)が、具体的に
+  どのデジタルアクション(`IG_B01`〜`IG_B18`等)に対応するかを
+  さらに追い、Guide相当の入力と関連しうるかを確認する。
+- (c) このレイヤー(`SteamInputUtil.UpdateInput()`)の追跡は
+  いったん保留し、105/108/110章のログに立ち戻って、
+  `LastInputIndex`が実際に`-1`になる直前のフレームで、
+  `Root26SteamPadDeepStateProbe`が観測している
+  `Controller.Count`/`InputHandles`等、他の既存observerに
+  変化がないかを再確認する。
+
+この節では新規コードの実装・ビルド・デプロイは行っていない。
+
+本節時点でGit commit/pushは行っていない。新規state-changing
+呼び出しは追加していない。Guide入力偽装、SendInput、Steam
+APIのstate-changing call、Steam binaryのpatch/hook/injectionは
+一切行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+
+## 114. `LastInputIndex = -1` 強制無効化条件のzero-base静的解析 - RVA `0x1825FBC50`の構造をCONFIRMED、名前はUNRESOLVED
+
+### 114.1 用語の訂正(ユーザー指摘)
+
+Chapter113でCONFIRMEDした内容を踏まえ、これまで使ってきた
+「device loss/reacquisition」という呼称は、実際にWindowsや
+Steamがコントローラーを切断したことまでは意味しない。
+確定しているのは`SteamInputUtil.LastInputIndex`という
+GameAssembly側マネージド変数が一時的に`-1`になることだけで
+あり、`GetCurrentControlDevice()`の`Keyboard`表示はその
+**単純な派生**である。したがって以後は
+「一時的device loss」ではなく
+**「GameAssemblyの`LastInputIndex`一時無効化」**と呼ぶ
+(ユーザー指摘、CONFIRMED範囲に即した訂正)。
+
+### 114.2 手法
+
+引き続きread-onlyの静的解析のみ。`GameAssembly.dll`を
+`pefile`+`capstone`で直接逆アセンブルし、Cpp2ILのISIL
+(`C:\tmp_cpp2il_out\IsilDump`)・diffable-cs
+(`C:\tmp_cpp2il_out2\DiffableCs`)と突き合わせた。新規実装・
+ビルド・デプロイ・実機テストは一切行っていない。
+
+### 114.3 関数境界の確認 - CONFIRMED
+
+RVA `0x25FBC50`直前のバイト列を確認したところ、直前の
+関数末尾(`call 0x1800e6970`という例外throwヘルパー呼び出しに
+続く`int3`パディング、IL2CPPの定型的な関数間パディング)で
+終わっており、`0x1825FBC50`が**実際の関数開始点**であることを
+CONFIRMEDした(前関数の内部にジャンプで迷い込んでいる、
+という懸念はない)。
+
+### 114.4 全呼び出し元 - CONFIRMED
+
+Cpp2ILが解析した全42アセンブリ・4131型ファイル分のISIL
+ダンプ全体を`Call 0x1825FBC50`で横断検索した。
+
+**CONFIRMED**: 呼び出し元は`SteamInputUtil.UpdateInput()`
+**内部の2箇所のみ**(113.4節で確認済みの154行目・243行目)。
+他のいかなる管理コード(Assembly-CSharp、
+Assembly-CSharp-firstpass、Il2Cppmscorlib、UnityEngine各
+モジュールを含む)からもこのRVAへの直接呼び出しは存在しない。
+すなわちこの関数は`UpdateInput()`専用の内部ヘルパーである。
+
+### 114.5 引数 - CONFIRMED(3番目の引数は関数内で未使用)
+
+`0x1825FBC50`の実際のx64プロローグを確認したところ、
+`rcx`→`r15`(this)、`rdx`→`r12`(ref引数ポインタ)が保存される
+一方、呼び出し直後に`r8d`は`xor r8d, r8d`で即座にゼロクリア
+され、**その後一度も参照されない**ことを確認した。
+
+**CONFIRMED**: 呼び出し元が渡す3番目の引数(`r8=0`)は、この
+関数の内部では一切使用されていない。したがって実際のC#
+シグネチャは実質的に`(SteamInputUtil this, ref ulong key)`の
+2引数相当である可能性が高い。これは
+`combine_buttonguide(ref System.UInt64 key)`のシグネチャと
+矛盾しない(Chapter113時点では引数数の不一致を理由に
+同一視を保留していたが、本節の確認によりその懸念は
+後退した)。ただし、Cpp2ILの型情報からRVAを直接突き合わせる
+手段が今回のツールセットには無いため、
+**名前の同一性は依然HYPOTHESISに留め、CONFIRMEDへは
+昇格させない**。
+
+### 114.6 内部構造 - CONFIRMED(制御フロー) / HYPOTHESIS(意味)
+
+#### 114.6.1 前半: コントローラ最大2件についてビットマスクを構築
+
+`0x1825FBC50`は`0x1820365a0`を呼び、2つのint32値(初期値
+`-1,-1`)を得る。`0x1820365a0`自体は薄いラッパーで、
+静的フィールド初期化チェックの後、
+`[静的グローバル]→+0xb8→+0x10`という参照チェーンを辿り、
+非0であれば共有ジェネリック実装`0x18250ddf0`へ
+**tail jump**する構造だった(CONFIRMED、逆アセンブルで確認)。
+この`+0xb8`という参照パターンは、78章で確認した
+`GameAssembly base + RVA(0x182E4F3E0)→+0xB8→+0xB0`の
+managed selfチェーンと**表面上類似する**が、参照している
+静的グローバルのRVAは異なっており、**同一のグローバルか
+どうかは未確認(UNRESOLVED)**である。
+
+得られた2つのindexそれぞれについて、`0x181494740`・
+`0x1825f79b0`・`0x1825f69a0`(第3引数固定値`3`)という
+呼び出し連鎖を経て、`0x1825f69a0`が返す16bit値
+(`1`〜`0x19`=25の範囲かをチェック)から
+`1 << (値-1)`のビットマスクを構築し、呼び出し元の`ref`引数へ
+`OR`で合成する(CONFIRMED、逆アセンブルで確認)。
+
+#### 114.6.2 後半: 文字列組み立てとみられる処理
+
+前半のビットマスク構築の後、`0x1825FBC50`は6要素の配列
+(`[rbx+0x20]`〜`[rbx+0x50]`)を`0x1800e65b0`・
+`0x1810d6760`等の呼び出しで埋めていく処理を含む。この
+パターン(固定フィールド参照+`test byte[rcx+0x12f],2`という
+静的初期化チェックの反復+`0x1800e6540`系ヘルパー呼び出し)
+は、他のIL2CPPコード(`ButtonName2KeyID`等)で見られる
+**文字列/スプライトタグ結合処理**と構造が類似する
+(HYPOTHESIS)。これは「画面上のボタン操作案内アイコン文字列
+を組み立てている」という114.6.1節の
+`combine_buttonguide`同一性HYPOTHESISと整合するが、
+確定はできない。
+
+### 114.7 戻り値が非0になる条件(呼び出し元視点) - CONFIRMED
+
+`UpdateInput()`側は、この関数の戻り値(`rax`)自体ではなく、
+**`ref`引数として渡したスタック領域(`stack:0x50`)の内容**を
+呼び出し後に読み、それが非0かどうかで分岐する(Chapter113
+の244〜246行目)。
+
+**CONFIRMED**: `LastInputIndex=-1`への強制上書きが発生する
+条件は、「2つの候補コントローラindexのうち少なくとも
+一方について、`0x1825f69a0(mode=3)`が返す
+`1`〜`0x19`の範囲の値が得られ、対応するビットが
+`ref`引数へ合成された」ことである。すなわち、**特定の1個の
+デジタルアクション/ボタンの押下ではなく、「何らかの
+アクション起源(origin)が解決できたかどうか」という
+ANY条件**である可能性が高い(HYPOTHESIS、`0x1825f69a0`の
+mode=3が具体的に何を意味するかは未確認)。
+
+### 114.8 復帰パス `0x182602F30` の内部 - 重要な新規CONFIRMED
+
+Chapter113で「復帰パス」と呼んだ`0x182602F30(this, index)`を
+逆アセンブルした。
+
+```text
+0x182602F5E: mov rbx, [rbp+0x20]          ; this.+0x20 (コントローラ配列)
+0x182602F9F: mov rcx, [rbp+0x10]
+0x182602FA3: mov rbx, [rbx+r13*8+0x20]    ; index番目のコントローラオブジェクト
+0x182602FB1: mov r8, [rip+0x8851b8]       ; = [0x182E88170] (静的グローバル)
+0x182602FB8: mov rdx, rbx
+0x182602FBB: call 0x181519140             ; ここが成否判定
+0x182602FC0: test al, al
+0x182602FC2: je <exit-with-failure>
+```
+
+`0x181519140(rcx=this.field+0x10相当, rdx=controllerObj,
+r8=[0x182E88170])`の内部実装:
+
+```text
+test rcx, rcx           ; nullチェック
+mov rax, [r8+0x18]       ; r8 = 引数r8 (0x182E88170から得た値)
+mov r8, [rax+0xc0]
+mov rax, [r8+0x88]
+mov r8, rax
+call qword ptr [rax]     ; ★ vtable経由の仮想関数呼び出し ★
+test eax, eax
+setns al                 ; 戻り値 >= 0 なら true
+ret
+```
+
+**CONFIRMED**: `LastInputIndex`の復帰パス
+(`0x182602F30`→`0x181519140`)は、内部で
+`call qword ptr [rax]`という**実際のvtable経由の仮想関数呼び出し**
+を経由しており、戻り値が非負(`>=0`)であることを成功条件と
+している。この「`[obj+0xc0]→+0x88→vtable slot0`を辿って
+呼び出し、`結果>=0`を成功とする」という形は、87章以降本調査で
+繰り返し確認してきた、steamclient64.dll側ネイティブ
+インターフェース(`ISteamInput`)へのvtable呼び出しパターンと
+**構造的に類似する**(HYPOTHESIS)。ただし、この`rax`
+(`[0x182E88170]`から導かれるオブジェクト)が実際に
+steamclient64.dllのアドレス範囲を指しているかどうかは、
+今回の純粋な静的解析(GameAssembly.dllのみを対象とした
+pefile+capstone)だけでは確認できない
+(実行時のメモリ内容が必要、UNRESOLVED)。
+
+### 114.9 ユーザー提示の判定基準 N1/N2/N3への回答
+
+**N2寄りのUNRESOLVED**と判定する。理由:
+
+- `0x1825FBC50`(強制無効化条件)が、Guide/Homeボタンや
+  特定の物理ボタンを直接読んでいるという証拠は
+  **得られなかった**。読んでいるのは「アクション起源が
+  解決できたか」という抽象的な条件であり、これがGuide
+  ボタン固有の処理かどうかはUNRESOLVEDのままである
+  (N1を確定させる証拠は無い)。
+- 一方、`0x1825FBC50`はUI用の文字列/アイコン構築処理を
+  含んでいる可能性が構造的に高く(114.6.2節)、これは
+  Guideボタンの物理押下検出そのものではなく、**画面表示用の
+  副産物処理である可能性を否定できない**(N3寄りの材料)。
+- しかし復帰パス側(`0x182602F30`/`0x181519140`)は、
+  ネイティブvtable経由の呼び出しに成否判定を委ねており、
+  これは**単なるUI/menu/focus判定だけではなく、何らかの
+  実デバイス層(Steam Input側を含む可能性がある)の状態を
+  反映している**ことを示唆する(N2寄りの材料、N3を完全には
+  支持しない)。
+
+結論として、`LastInputIndex`の`1→-1→1`遷移は、
+「同じcontroller objectの一時無効化→再認識」と
+「input activity indexの単なる再選択」の**中間的な性質**を
+持つ、というのが現時点で最も正確な整理である
+(114.10節)。
+
+### 114.10 `1 → -1 → 1` の分類(ユーザー質問への回答)
+
+ユーザーが提示した3分類について、現時点のCONFIRMED範囲で
+判定する。
+
+- 「同じcontroller objectの一時無効化→再認識」:
+  **部分的に支持**。復帰パス(`0x182602F30`)は同じ
+  `[this+0x20]`配列の同じindexのコントローラオブジェクトに
+  対して`0x181519140`の成否判定を毎回行っており、
+  オブジェクト自体が破棄・再生成されるわけではない
+  (CONFIRMED、配列参照は同一)。
+- 「controller listの再構築」:
+  **支持する証拠なし**。`[this+0x20]`・`[this+0x80]`等の
+  配列そのものが作り直される処理は、`UpdateInput()`内の
+  今回確認した範囲には見当たらなかった。
+- 「input activity indexの単なる再選択」:
+  **部分的に支持**。強制無効化パス(`0x1825FBC50`)は
+  「アクション起源解決の有無」という抽象条件でしかなく、
+  復帰パスは「ループで最初に成功したindex」を単純に
+  採用するだけであり、両者とも「特定の物理デバイスの
+  切断/再接続」を直接表す処理には見えない。
+
+総合すると、**「特定のcontrollerオブジェクトに対する
+一時的な有効性判定(`0x181519140`のvtable呼び出し)の
+成否が、たまたま数百ms続いた」**という説明が、現時点の
+CONFIRMEDされた構造と最も整合する(HYPOTHESIS)。
+
+### 114.11 `0x1825F7410`について
+
+ユーザー指示通り、`AllCollidersEnable(false)`らしさは
+HYPOTHESISのまま据え置き、RSTICK/Steam Input経路との接続が
+確認できていない現状では深追いしない。
+
+### 114.12 次段(未実装、提案のみ)
+
+- (a) `0x181519140`が呼び出す`vtable slot0`
+  (`[[0x182E88170]+0x18]+0xc0]+0x88]`のvtable先頭)の
+  呼び出し先アドレスを、実行時probe(read-only、既存の
+  managedInner解決チェーンと同様の手法)でメモリを読み、
+  steamclient64.dllのアドレス範囲に属するかどうかを確認する。
+  これは新規実装が必要なため、着手前にユーザーの合意を得る。
+- (b) `0x1825f69a0`(mode=3で呼ばれる、1〜25の値を返す関数)
+  をさらに逆アセンブルし、この値が具体的にどのデジタル
+  アクション(`IG_B01`〜`IG_B18`等)のindexに対応するかを
+  確認する。
+- (c) このレイヤーの追跡はここでいったん保留し、
+  105/108/110章の実機ログへ立ち戻って、`LastInputIndex`が
+  `-1`になる直前・直後のフレームで、他の既存observer
+  (`Controller.Count`・`InputHandles`等)に変化がないかを
+  再確認する。
+
+この節では新規コードの実装・ビルド・デプロイ・実機テストは
+行っていない。
+
+本節時点でGit commit/pushは行っていない。新規state-changing
+呼び出しは追加していない。Guide入力偽装、SendInput、Steam
+APIのstate-changing call、Steam binaryのpatch/hook/injectionは
+一切行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+
+## 115. `LastInputIndex`復帰パスのruntime target identity確認 - probe実装完了、実機テスト待ち
+
+### 115.1 目的
+
+Chapter114でCONFIRMEDした復帰パス(`SteamInputUtil.UpdateInput()`
+→ RVA `0x2602F30` → RVA `0x1519140` → `call qword ptr [rax]`)の
+実際のruntime call targetを、read-onlyで確認する。目的は
+call targetが`steamclient64.dll`か、他のSteam系moduleか、
+`GameAssembly.dll`自身のwrapperかを特定すること。
+
+### 115.2 チェーンの再確認(Chapter114の逆アセンブルより)
+
+```text
+rcxGate      = *(*(SteamInputUtil.instance.Pointer + 0x80) + 0x10)
+globalPtr    = *(GameAssembly.dll base + RVA 0x2E88170)
+chainA       = *(globalPtr + 0x18)
+chainB       = *(chainA    + 0xc0)
+interfaceObj = *(chainB    + 0x88)
+vtableSlot0  = *(interfaceObj + 0x0)   <- "call qword ptr [rax]" の実ターゲット
+```
+
+`rcxGate`はvtable target算出には使われないことをChapter114で
+確認済みだが、`0x181519140`冒頭のnullチェック対象であるため、
+診断用に併せて読む。
+
+### 115.3 実装 - `Root26LastInputIndexVtableTargetProbe`(新規)
+
+`src/Root26LastInputIndexVtableTargetProbe.cs`を新規実装した。
+`ModMain.OnUpdate()`から無条件(探索中に限定しない)で毎フレーム
+`Sample()`を呼ぶ、既存probeと同一パターン。
+
+- `SteamInputUtil.instance.Pointer`(既存probeで実績のある
+  native pointer取得手段、`Root26FieldOffsetMapProbe`と同一)
+  からチェーンを`Marshal.ReadIntPtr`のみで辿る。
+- 各段階でNULLチェックし、途中で未初期化なら
+  `globalPtr=NULL(not-yet-initialized)`等、段階が分かる形で
+  STATE-CHANGEログを出し、それ以上は辿らない(既存probeの
+  再試行方針を踏襲)。
+- 最終的な`vtableSlot0`アドレスについて、`Process.Modules`を
+  走査し、そのアドレスが属するモジュール名+RVAを解決する
+  (`ResolveModuleAndRva`)。読み取り専用のモジュール列挙であり、
+  コード実行は一切行わない。
+- `SteamInputUtil.LastInputIndex`を同じログ行に含め、
+  他の既存observer(`Root26SteamStateProbe`の
+  `LastInputIndex`ログ等)と同じ`DateTimeOffset.Now:O`形式で
+  時系列相関を取れるようにした。
+- vtable関数そのものは一切呼び出さない(`call`しない、
+  読むだけ)。`ResetController`/`SteamControllerReStart`/
+  `Shutdown`/`Init`/`UpdateConnectedControllers`/
+  `ActivateActionSet*`/`SendInput`/Guide偽装/Steamバイナリの
+  patch・hook・injectionは一切行っていない。
+
+### 115.4 ビルド・デプロイ・ハッシュ確認
+
+```text
+dotnet build -c Release  -> 0 Warning / 0 Error
+SHA-256(ビルド成果物)   = 1e990ec581f09c2abafaa0d4203ba55cc81e0c693aae4cfed692865bb6925650
+SHA-256(Mods配下deploy) = 1e990ec581f09c2abafaa0d4203ba55cc81e0c693aae4cfed692865bb6925650
+```
+
+ソースとデプロイ済みDLLのSHA-256が一致することを確認した。
+ビルド前に`ModMain.cs`の`// Root26Phase4NativeRecoveryPoc.Sample();`
+`// Root26Phase8OverlayToStoreOpenPoc.Sample();`の2行がコメント
+アウトされたままであることを再確認済み。
+
+### 115.5 判定フレームワーク(ユーザー提示、そのまま採用)
+
+- **P1**: targetが`steamclient64.dll`
+  → GameAssemblyの`LastInputIndex`復帰とSteam client内部state
+  の直接接続がCONFIRMED。
+- **P2**: targetが別のSteam系module
+  → そのmoduleを次の静的対象にする。
+- **P3**: targetが`GameAssembly.dll`等のwrapper
+  → wrapperをさらに1段静的追跡。
+- **P4**: target identityは一定だが、DEAD/LIVEでreturnだけ変化
+  → object内部state/Steam側入力availabilityが本命。
+- **P5**: target/object自体が遷移時に変わる
+  → reacquisition/object replacementの可能性が強くなる。
+
+### 115.6 次段
+
+実機テスト待ち。ユーザーがChapter110/105/108と同様の手順
+(DEAD確認→スティックを動かし続けながらGuide押下→LIVE確認)を
+実施し、`TESTOK`を受けたら、まず`MelonLoader\Latest.log`を
+`investigations\ROOT26_LOGS\`へタイムスタンプ付きで保存してから
+(110.2節の運用を継続)、`Root26LiiVtableTargetProbe`の
+STATE-CHANGEログを既存observer
+(`Root26SteamState`の`LastInputIndex`、`Root26SteamPadState`の
+`GetCurrentControlDevice()`)と時系列相関させ、P1〜P5の
+いずれに該当するかを判定する。
+
+
+### 115.7 ADVERSE PERFORMANCE SIDE EFFECT / runtime test aborted
+
+ユーザーが115.6節の実機テスト手順を開始したところ、ゲームが
+著しく低速化する現象が発生し、右スティックのDEAD/LIVE確認まで
+進めずにテストを中止した。ユーザーは「以前のF10超高速化とは
+逆で、今回は観測コードそのものの負荷が怪しい」と指摘した。
+
+**CONFIRMED**: `Root26LastInputIndexVtableTargetProbe`導入前の
+ビルドではこの著しい低速化は発生していなかった
+(105/108/110章のテストはいずれも正常な速度で実施できている)。
+本probeの導入と低速化の発生は時系列上一致する。
+
+**HYPOTHESIS(有力候補、まだCONFIRMEDではない)**: 本probeの
+`ResolveModuleAndRva`(`vtableSlot0`アドレスの所属モジュール
+解決)が、毎フレーム`Process.Modules`を列挙している
+実装になっていた点が、低速化の原因として有力である。
+`Process.Modules`の列挙はOS側のモジュールスナップショット
+取得を伴うため、本来は起動時や値変化時にのみ行うべき
+処理であり、`Sample()`が毎フレーム(`ModMain.OnUpdate()`から
+無条件に)呼ばれる設計と組み合わさったことで、想定より
+大きな負荷になった可能性が高い。ただし、`ResolveGameAssemblyBase()`
+自体は初回のみ解決してキャッシュする設計だったため、
+低速化の主因が`ResolveModuleAndRva`(こちらは毎フレーム
+`Process.Modules`を列挙する設計のまま実装してしまっていた)に
+あるという整理は妥当だが、これも含めて**原因はCONFIRMEDとせず、
+「新規probe、とくに毎フレームのmodule enumeration/address
+resolutionが有力候補」に留める**(ユーザー指示通り)。
+
+**対応**: 115.8節の通り、`Root26LastInputIndexVtableTargetProbe.Sample();`
+を`ModMain.OnUpdate()`から即座にコメントアウトし、clean build→
+deploy→SHA-256確認まで実施した。probeのソースコード自体は
+研究記録として残している(削除していない)。
+
+### 115.8 対応(実施済み) - probe無効化・ビルド・デプロイ・ハッシュ確認
+
+```text
+ModMain.cs:
+  Root26LastInputIndexVtableTargetProbe.Sample();
+  ->
+  // Root26LastInputIndexVtableTargetProbe.Sample(); // disabled ...
+
+dotnet build -c Release  -> 0 Warning / 0 Error
+SHA-256(ビルド成果物)   = 667be6f06c850f631f07d36160c0c878e02b9a5be1a00952b8b1a6052c4b37e7
+SHA-256(Mods配下deploy) = 667be6f06c850f631f07d36160c0c878e02b9a5be1a00952b8b1a6052c4b37e7
+```
+
+ビルド前に、`Root26Phase4NativeRecoveryPoc.Sample();`・
+`Root26Phase8OverlayToStoreOpenPoc.Sample();`の2行に加え、
+今回無効化した`Root26LastInputIndexVtableTargetProbe.Sample();`
+の計3行がすべてコメントアウトされていることを再確認した。
+ソースとデプロイ済みDLLのSHA-256は一致している。この時点で
+実機による速度確認(通常速度に戻るかどうか)はまだ行っていない。
+
+### 115.9 次回probe実装時の設計指針(ユーザー指示、確定事項として記録)
+
+`Root26LastInputIndexVtableTargetProbe`を再度有効化する場合、
+以下の設計変更を行う。
+
+- module一覧・base address・rangeは初回1回だけ解決してキャッシュし、
+  毎フレーム`Process.Modules`を列挙しない。
+- `vtableSlot0`アドレス(あるいはそれを含むポインタチェーンの
+  途中経過)が前回サンプルから変化した時だけ、モジュール解決を
+  再実行する。
+- STATE-CHANGEのみログする方針(既存)は維持する。
+
+### 115.10 ユーザーからの追加観測: Guide押下時にマウスカーソルが動いた(未分析、記録のみ)
+
+ユーザーは今回、探索中に右スティックを動かし続けながらGuide
+ボタンを押す操作を実際に行った(本来のRSTICK確認までは
+中止したが、Guide押下自体は行った)。その際、
+**「マウスカーソルが動いた」**という現象を目視で確認したと
+報告があった。
+
+これは新規の未分析の観測情報であり、Guideボタン押下と
+何らかのマウス/カーソル制御処理との関連を示唆する可能性が
+ある(HYPOTHESIS、断定しない)。本節時点ではログとの
+突き合わせ・原因調査のいずれも行っていない
+(**UNRESOLVED、次段の調査候補として記録するに留める**)。
+低速化問題の解消を優先し、この観測の分析は次段以降に
+持ち越す。
+
+本節時点でGit commit/pushは行っていない。probeを無効化した
+ビルドのデプロイまでは完了しているが、実機による速度確認・
+マウスカーソル観測の分析はまだ行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+
+## 116. ユーザー新規観測: 「Guide復帰後、Guideを押している間だけカメラ速度が上がる」現象を確認
+
+### 116.1 証言内容(ユーザー原文)
+
+> ガイドを押して右スティックが復活した後ガイドを押してる間だけ
+> カメラの速度が上がる現象を確認
+
+Chapter115.10の「Guide押下時にマウスカーソルが動いた」という
+証言に続き、今回は「RSTICK復帰**後**、Guideを**押している間**
+だけカメラ速度が上がる」という、より具体的な新規現象が
+報告された。
+
+### 116.2 直近セッションのログ保存(解析前、CONFIRMED)
+
+Chapter115でprobeを無効化・再デプロイした直後のセッション
+(18:35:39起動〜18:36:14終了)の`Latest.log`を、解析前に
+保存した。
+
+```text
+保存先: investigations\ROOT26_LOGS\Root26_Chapter116_2026-09-08_183614.log
+SHA-256: fabab1f746090cb9fb5945189cb599bc3cc886d02df6ef52b3e6790278d291d0
+（コピー元 MelonLoader\Latest.log と一致確認済み）
+```
+
+### 116.3 このログから確認できること(CONFIRMED、限定的)
+
+`Root26Phase1SetAnalogProbe`が記録した、このセッション中の
+RSTICK`SetAnalog CalledActive`イベント(5件、いずれもdx/dyの
+絶対値は通常範囲`[-1,1]`内、異常な大きさのスケーリングは
+確認できない)。
+
+```text
+18:36:03.609 dx=0.9994507   dy=-0.032624286
+18:36:05.005 dx=0.99865717  dy=-0.051332135
+18:36:05.942 dx=-0.5380108  dy=0.08529923
+18:36:07.536 dx=-0.9998169  dy=-0.017639698
+18:36:08.939 dx=-0.99612415 dy=-0.08764916
+```
+
+**CONFIRMED(限定的)**: 少なくともこのセッションで記録された
+`SetAnalog`の生の値(dx/dy)自体には、異常な倍率がかかっている
+形跡はない。すなわち、ユーザーが報告した「カメラ速度上昇」は、
+**RSTICKの生アナログ値そのものの変化ではなく、その後段
+(カメラ制御コード側の速度計算、あるいは別の入力経路の
+重畳)で発生している可能性が高い**(HYPOTHESIS)。
+
+なお、本セッションでも`Root26Phase5`(Overlayコールバック)は
+0件であり(112章で確認した「スティックを動かしながらGuideを
+押すとOverlayへ行かない」パターンと整合)、`field116780`は
+`0x152`〜`0x15A`まで進行していた(105/108/110章と同型の
+遷移パターン)。
+
+### 116.4 Chapter115.10の証言との関連(HYPOTHESIS、未確認)
+
+Chapter115.10で報告された「Guide押下時にマウスカーソルが
+動いた」という観測と、今回の「Guide押下中だけカメラ速度が
+上がる」という観測は、**同一の根本原因を指している可能性が
+ある**(HYPOTHESIS)。すなわち:
+
+- Guideボタンが物理的に押されている間、Steam Input側が
+  何らかの形で**マウス入力(カーソル移動)を能動的に生成/
+  中継している**可能性がある。
+- 本Modのネイティブ右スティックカメラ実装
+  (`docs/research/RIGHT_STICK_VIEW_AND_DASH_INVESTIGATION.md`
+  冒頭の`fldCamera.calcCamNormal()`/`fldCamera.fldCamMain()`
+  を経由する経路、あるいは別の経路)が、RSTICKからの入力に
+  加えて**マウスのdelta入力も同時にカメラ回転へ反映する**
+  設計になっている場合、Guide押下中はRSTICK起因の回転量に
+  マウス由来の回転量が**加算**され、結果として体感速度が
+  上がって見える、という説明が構造的に成立しうる。
+
+ただし、これは現時点でHYPOTHESISに過ぎない。マウスカーソル
+移動の実際の発生源(Steam Overlay/Big Picture側のUI連動か、
+ゲーム自身のマウス入力処理か、Windows側のカーソル制御か)も、
+カメラ制御コードが実際にマウスdeltaを読んでいるかどうかも、
+未確認(UNRESOLVED)である。
+
+### 116.5 今後の方針(提案、未実装)
+
+Chapter115の教訓(毎フレームの重い処理、特に`Process.Modules`
+列挙をprobeに入れない)を踏まえ、次に実装する場合は
+**軽量な読み取り専用probeに限定する**。候補:
+
+- (a) 既存の`RightStickPollingProbe`
+  (ネイティブ右スティックカメラの入力ソース)が、マウス入力
+  (Windowsのカーソル位置/delta)を読んでいるコードパスを
+  持つかどうかを、まずソースコードレベルで確認する
+  (静的確認、実装変更なし)。
+- (b) Guide押下中にWindowsのマウスカーソル座標
+  (`GetCursorPos`相当、read-only)が実際に変化しているかを、
+  軽量なポーリングprobeで確認する。ただし、Chapter115の
+  反省を踏まえ、**高頻度ポーリングや重いAPI呼び出しは避け、
+  変化検出のみに限定**する設計とする。
+- (c) この現象の追跡はいったん保留し、
+  `LastInputIndex`復帰パスのvtable target確認
+  (Chapter115で中断)を、Chapter115.9の設計指針
+  (module解決を初回のみキャッシュ)に沿って軽量に再実装し、
+  先にそちらを完了させる。
+
+いずれも実装前にユーザーの方針確認を待つ。この節では
+コードの実装・ビルド・デプロイは行っていない。
+
+本節時点でGit commit/pushは行っていない。新規state-changing
+呼び出しは追加していない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+
+## 117. Guide押下中のみカメラ速度が上がる現象のzero-base静的確認 - X軸の恒常的native依存とdormantなmouse-drag経路をCONFIRMED
+
+### 117.1 手法
+
+この章はコード変更・新規probe・build・deployを一切行わない、
+純粋なソースコードレビューである。対象は本Mod自身の
+`src/`配下(`NativeRightStickCameraPatch`
+[`AnalogCameraRouteProbe.cs`]・`SdlRightStickInput`・
+`RightStickPollingProbe`・`RightStickTurnInput`・
+`NativeMouseVerticalCameraPoc`)と、既存ドキュメント3〜4章・
+13〜14章(2026-08-22/09-07)の過去記録の突き合わせ。
+
+### 117.2 Y軸は常にMOD側SDL値で上書きされる - CONFIRMED(既知、再確認)
+
+`AnalogCameraRouteProbe.cs`の`NativeRightStickCameraPatch`
+(`dds3PadManager.GetPadAnalog`へのHarmony Postfix、`ref byte
+__result`)は、`__0==0 && __2==1 && __3==1 && __1==1`
+(= 右スティックY軸チャンネル`GetPadAnalog(0,1,1,1)`)のとき、
+`FieldDashPatch.IsExplorationActive && SdlRightStickInput.HasLiveInput`
+が真であれば、native側の`__result`を
+`SdlRightStickInput.GetNativeVerticalAxis()`(MOD自身のSDL
+サンプリング値)へ**無条件に上書き**する。
+
+**CONFIRMED**: `HasLiveInput`は`ExternalInputBridge.TryRead()`
+(Steam Inputを一切経由しない、MOD独自のSDL3ベース外部読み取り)
+の成否のみで決まり、**native Steam Input側のRSTICK
+DEAD/LIVE状態には一切依存しない**。すなわちY軸は、native側が
+DEADであろうとLIVEであろうと、探索中は常にMOD自身のSDL
+サンプル値で駆動されてきた(Guide押下前後で変化しない)。
+
+### 117.3 X軸はMODから一切上書きされていない - CONFIRMED(新規発見)
+
+`SdlRightStickInput.GetNativeHorizontalAxis()`は実装されている
+ものの、`grep`で全ソースを検索した結果、**呼び出し元が
+どこにも存在しない(dead code)**。
+
+`RightStickTurnInput.TrySample()`(X軸をnative
+`GetPadAnalog(0,1,0,1)`で直接サンプリングし、左右デジタル
+旋回を判定する機能)についても、`grep`で全ソースを検索した
+結果、**`TrySample()`自体を呼び出している箇所がどこにも
+存在しない**(`_sampledState`は初期値`Neutral`から一度も
+更新されない、dead code)。関連するHarmonyパッチ
+`FieldTurnPadCheckPatch`(`RightStickTurnInput.cs`)も、
+`ModMain.cs`の`HarmonyInstance.CreateClassProcessor(...)`
+一覧に含まれておらず、**登録されていない(未パッチ)**。
+
+**CONFIRMED**: 本Modには、X軸(`GetPadAnalog(0,1,0,1)`)の値を
+書き換える・介入する経路は現在1つも存在しない。X軸は
+**常に100%native値そのもの**である。
+
+### 117.4 native側`fldCamMain()`はX/Y両方を使ってカメラを動かす - CONFIRMED(3〜4章、既存記録の再確認)
+
+ドキュメント3〜4章(既存記録)より、`fldCamera.fldCamMain()`の
+実際のnative呼出しは次の通り、CONFIRMED済みである。
+
+```text
+GetPadAnalog(0, 1, 0, 1)  // Right Stick X
+GetPadAnalog(0, 1, 1, 1)  // Right Stick Y
+```
+
+`fldCamMain()`はX/Yの両方を取得し、`fldCamera.mMoveLR`/
+`mMoveUD`という方向状態を構築するコードが存在することも
+既にCONFIRMED済みである(4章)。すなわち、native camera計算は
+**X軸・Y軸の両方を実際に使用する設計**であり、X軸は
+「デジタル旋回専用」ではなく、アナログ量としてカメラ制御に
+寄与しうる。
+
+### 117.5 Q2への回答: 「同一軸への二重加算」ではなく「常時死んでいたX軸がnative LIVE化で初めて生きる」構造 - HYPOTHESIS(構造はCONFIRMED、因果はHYPOTHESIS)
+
+117.2〜117.4を総合すると、次の構造がCONFIRMEDされる。
+
+```text
+Y軸: 常にMOD(SdlRightStickInput)が上書き
+     → Guide前後で値の性質は変化しない
+
+X軸: 常にnative値そのもの
+     → Guide前(native RSTICK DEAD): 128固定 = 回転寄与ゼロ
+     → Guide後(native RSTICK LIVE): 実際の物理値 = 回転に寄与
+```
+
+**HYPOTHESIS**: `fldCamMain()`が`mMoveLR`(X由来)と`mMoveUD`
+(Y由来)の両方からカメラ回転を計算しているとすれば、
+Guide前は実質「Y軸のみが効く1軸操作」、Guide後は
+「X軸・Y軸ともに効く2軸操作」に変化する。同じスティック
+入力(特に斜め方向の入力)に対して、Guide後の方が
+「使われる入力量」が増えるため、体感速度が上がって見える、
+という説明が構造的に成立しうる。これは`ref byte __result`の
+**同一チャンネルへの二重加算**ではなく、
+**従来ゼロ寄与だった別チャンネル(X)がGuide後に非ゼロ
+寄与へ変わる**という形のQ2である。
+
+ただし、この説明は「Guide後は恒常的に(セッションが続く限り)
+X軸が効くようになる」ことを予測する。105/108/110章では
+`field116780`が最終遷移した後、entry.x/yはセッション終了まで
+LIVEのまま維持されており、**「Guideを離すと元に戻る」という
+ユーザーの証言(可逆性)とは整合しない**。したがって117.5節の
+説明だけでは、今回の「Guideを**押している間だけ**」という
+限定を十分に説明できない(UNRESOLVED、117.7節で別の候補を
+検討する)。
+
+### 117.6 Guide押下時のマウスカーソル移動との接続候補: dormantな`NativeMouseVerticalCameraPoc`を発見 - CONFIRMED(重要)
+
+`src/NativeMouseVerticalCameraPoc.cs`に、`fldCamera`の
+**native mouse-dragカメラ経路**を対象とした、既存の
+read-only診断パッチが2つ存在することを確認した。
+
+```csharp
+[HarmonyPatch(typeof(fldCamera), "MouseDraggCheck")]
+internal static class NativeMouseDragCheckPatch { ... }
+
+[HarmonyPatch(typeof(fldCamera), "MouseDirection")]
+internal static class NativeMouseDirectionPatch { ... }
+```
+
+ファイル冒頭のコメントには次のように明記されている。
+
+> Passive telemetry for the game's native mouse-drag camera path.
+> It intentionally does not alter results while diagnosing the
+> Steam recording transition that unexpectedly enabled free
+> vertical camera.
+
+**CONFIRMED**: これは13章(2026-08-22、Steam録画開始直後だけ
+上下カメラ速度・可動域が拡大した現象)を診断するために
+**過去に実装済みの、read-only(結果を一切書き換えない)
+telemetryパッチ**である。`NativeMouseDirectionPatch`は
+`fldCamera.MouseDirection(int, int)`の引数
+(マウスdirection)と、`fldCamera.mAxis`・
+`fldCamera.mAcceleration`・`fldCamera.mMoveUD`・
+`fldCamera.CameraMoveUD`を同時にログする設計であり、
+**マウスドラッグ由来の入力が、アナログスティック由来の
+`mMoveUD`と同じフィールドに影響しうることを前提とした
+実装**になっている。
+
+`grep`で`ModMain.cs`を検索した結果、
+`NativeMouseDragCheckPatch`・`NativeMouseDirectionPatch`は
+**現在どちらも`HarmonyInstance.CreateClassProcessor(...)`で
+登録されておらず、無効(dormant)**であることを確認した。
+
+### 117.7 Q1への回答: マウスドラッグ経路が実在し、Guide押下中のカーソル移動と接続しうる - HYPOTHESIS(有力、次段で検証可能)
+
+117.6の発見は、Chapter115.10でユーザーが報告した
+「Guide押下時にマウスカーソルが動いた」という証言と、
+今回の「Guideを押している間だけカメラ速度が上がる」という
+証言の**両方を単一の機構で説明しうる、具体的でCONFIRMED
+済みの経路**を提供する。
+
+```text
+Guideボタン押下(物理)
+    ↓ (未確認の経路、HYPOTHESIS)
+Windowsマウスカーソルの移動が発生
+    ↓
+fldCamera.MouseDirection(dx, dy) が呼ばれる(native、既存機構)
+    ↓
+fldCamera.mMoveUD / mAxis / mAcceleration が更新される
+    ↓
+RSTICK由来の mMoveUD 更新と合成され、カメラ回転量が増加
+```
+
+この経路は「Guideを離せばマウス移動も止まり、mMoveUDへの
+追加寄与も消える」という**可逆性**を自然に説明できる点で、
+117.5節のX軸恒常化仮説よりも、ユーザーの「押している間だけ」
+という証言とよく整合する。**したがって現時点ではQ1(マウス
+重畳)がQ2(同一軸二重加算)よりも有力候補と判断する
+(HYPOTHESIS、まだCONFIRMEDではない)**。
+
+ただし、13章の記録(423行目)には「マウスドラッグ関数も
+発火していなかった」という当時の否定的観測が残っている点に
+注意する必要がある。これは**2026-08-22時点の別の現象
+(Steam録画開始)についての観測**であり、今回の
+「Guide押下中」という異なる条件下でも同じ結論になるとは
+限らない。両者を同一視せず、切り分けて再検証する必要がある
+(UNRESOLVED)。
+
+### 117.8 Q3について
+
+117.5・117.7で有力な候補(X軸恒常化、マウス重畳)が
+見つかったため、native camera側のGuide/button modifierや
+timestep変化を追う調査は、本節では実施していない
+(ユーザー提示の優先順位「二重入力→マウス重畳→timestep」に
+従い、まだ필要ないと判断)。
+
+### 117.9 総合判定と次段(未実装、提案のみ)
+
+- **Q2(二重入力)**: 「同一チャンネルへの二重加算」ではなく
+  「X軸がGuide後に恒常的に非ゼロ寄与へ変わる」という、より
+  正確な構造がCONFIRMEDされた。ただし可逆性(Guideを離すと
+  戻る)を説明できないため、単独では今回の現象の**主因では
+  ない可能性が高い**(UNRESOLVED)。
+- **Q1(マウス重畳)**: 具体的でCONFIRMED済みのnative
+  mouse-drag経路(`fldCamera.MouseDraggCheck`/
+  `MouseDirection`)が存在し、しかもこれを診断するための
+  read-only telemetryパッチが**既に実装済みだが現在dormant**
+  であることが判明した。可逆性の説明とも整合するため、
+  **現時点で最有力候補**と判断する(HYPOTHESIS)。
+
+**次段提案**: 117.6で発見した既存の
+`NativeMouseDragCheckPatch`・`NativeMouseDirectionPatch`
+(いずれも読み取り専用、`__result`/引数を一切書き換えない
+設計であることをソースレベルで確認済み)を`ModMain.cs`へ
+登録して再度有効化し、Guide押下中に実際に
+`MouseDirection`が非ゼロ引数で呼ばれるか、
+`fldCamera.mMoveUD`/`CameraMoveUD`がRSTICK由来の寄与に
+加えて変化するかを観測する。これは新規コード実装ではなく
+**既存の(過去に安全性確認済みの)dormantコードの再有効化**
+であるため、Chapter115の教訓(毎フレームの重い処理を
+新規に追加しない)には抵触しない設計だが、それでも
+build・deploy・実機テストを伴うため、**着手前にユーザーの
+明示的な合意を得る**。
+
+この節ではコードの実装・変更・ビルド・デプロイは一切
+行っていない(`ModMain.cs`・`AnalogCameraRouteProbe.cs`・
+`SdlRightStickInput.cs`・`NativeMouseVerticalCameraPoc.cs`
+いずれも未変更)。
+
+本節時点でGit commit/pushは行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+
+## 118. Guide押下中のmouse-drag camera経路のruntime観測 - dormant telemetry再有効化・ビルド・デプロイ完了、実機テスト待ち
+
+### 118.1 目的
+
+Chapter117でCONFIRMEDした、既存の(2026-08-22時点で実装済みの)
+read-only native mouse-dragカメラtelemetry
+(`NativeMouseDragCheckPatch`/`NativeMouseDirectionPatch`、
+`src/NativeMouseVerticalCameraPoc.cs`)を再有効化し、Guide
+押下中に`fldCamera.MouseDirection()`が非ゼロ引数で呼ばれるか
+を観測する。目的はマウス重畳仮説(Q1)の直接検証。
+
+### 118.2 追加調査: dormantの実態は「ビルド対象からの除外」だった - CONFIRMED(Chapter117の記述を補強)
+
+再有効化を試みたところ、`ModMain.cs`への登録だけでは
+コンパイルエラー(`CS0246`型が見つからない)となった。原因を
+調査した結果、`NocturneModernController.csproj`に
+
+```xml
+<!-- Investigation-only telemetry retained in source, excluded from releases. -->
+<Compile Remove="src\NativeMouseVerticalCameraPoc.cs" />
+```
+
+という明示的なビルド対象除外設定が存在することが判明した。
+すなわちこのファイルは、Chapter117で記述した「未登録
+(dormant)」よりも一段強い「**ビルドに一切含まれていない**」
+状態だった。同じ除外リストには`RightStickTurnInput.cs`・
+`AnalogChannelTelemetry.cs`も含まれており(117章で「dead
+code」と判定した2ファイルと一致)、これらは意図的に
+「調査用に保持するが、通常リリースには含めない」という
+運用方針の下にあったことが分かる。
+
+### 118.3 実施した変更(最小限、スコープを絞った変更)
+
+- `NocturneModernController.csproj`: `src\NativeMouseVerticalCameraPoc.cs`の
+  `<Compile Remove>`行を削除し、ビルド対象に含めた
+  (`RightStickTurnInput.cs`・`AnalogChannelTelemetry.cs`等、
+  他の除外設定はそのまま維持、変更していない)。
+- `ModMain.cs`: `OnInitializeMelon()`内、既存の
+  `Root26Phase5OverlayActivatedProbe`登録の直後に、
+  `NativeMouseDragCheckPatch`・`NativeMouseDirectionPatch`の
+  `HarmonyInstance.CreateClassProcessor(...).Patch()`呼び出しを
+  2行追加した。
+
+いずれのパッチも`__result`/引数を書き換えない
+(`ref bool __result`はPostfixの引数だが読むだけ、
+`ref int __0, ref int __1`も同様に読むだけで書き換えない
+実装であることをソースレベルで再確認済み)。ログ出力は
+既存実装のまま(`MouseDraggCheck`側は状態変化時のみ、
+`MouseDirection`側は非ゼロ入力時に50ms間隔でスロットル)で、
+Chapter115の教訓(`Process.Modules`等の毎フレーム重い処理)に
+該当する処理は含まれていない。
+
+`SetCursorPos`/`mouse_event`/`SendInput`等、マウス入力を
+発生させるAPIは一切呼び出していない(既存実装のまま、
+新規追加もしていない)。
+
+### 118.4 ビルド・デプロイ・ハッシュ確認
+
+```text
+dotnet build -c Release  -> 0 Warning / 0 Error
+SHA-256(ビルド成果物)   = ee87e4370cfbc50cdb46500e535143037a939df13b05e670a51185d9cc8d6a8c
+SHA-256(Mods配下deploy) = ee87e4370cfbc50cdb46500e535143037a939df13b05e670a51185d9cc8d6a8c
+```
+
+ビルド前に、`Root26Phase4NativeRecoveryPoc.Sample();`・
+`Root26Phase8OverlayToStoreOpenPoc.Sample();`・
+`Root26LastInputIndexVtableTargetProbe.Sample();`の3行が
+すべてコメントアウトされたままであることを再確認済み
+(115章で無効化したprobeも引き続き無効のまま)。ソースと
+デプロイ済みDLLのSHA-256は一致している。
+
+### 118.5 実機テスト手順(ユーザー提示、そのまま採用)
+
+```text
+1. DEAD確認
+2. RSTICKを動かしながらGuideでLIVE化
+3. LIVE後もRSTICKを動かし続ける
+4. Guideを数回「押している間／離している間」で切り替える
+5. カメラ速度がGuide押下中だけ上がるか目視
+6. 終了
+```
+
+### 118.6 判定フレームワーク(ユーザー提示、そのまま採用)
+
+- **R1**: Guide押下中だけ`MouseDirection`が非ゼロ
+  → mouse重畳仮説をSTRONGへ。
+- **R2**: `MouseDirection`は常時ゼロ/変化なし
+  → mouse説を後退させる。
+- **R3**: mouse telemetryの変化タイミングと速度上昇の
+  タイミングが一致しない
+  → native camera/update回数/timestep側へ調査対象を移す。
+
+### 118.7 現状
+
+実機テストはまだ実施していない。`TESTOK`を受けたら、
+まず`MelonLoader\Latest.log`を`investigations\ROOT26_LOGS\`へ
+タイムスタンプ付きで保存してから(110.2節の運用継続)、
+`NATIVE-MOUSE`ログ(`MouseDraggCheck`/`MouseDirection`の
+両方)と、既存observer(`field116780`・
+`Root26Phase1SetAnalogProbe`・`Root26SteamStateProbe`等)を
+時系列で突き合わせ、R1/R2/R3を判定する。
+
+本節時点でGit commit/pushは行っていない。実機テストはまだ
+実施していない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+
+## 119. Chapter118実機テスト結果: R2確定 - `MouseDirection`は全セッションを通じて非ゼロで発火せず、mouse重畳仮説は後退
+
+### 119.1 ログ保存
+
+`TESTOK`受領後、解析前に生ログを保存した。
+
+```text
+保存先: investigations\ROOT26_LOGS\Root26_Chapter118_2026-09-08_190049.log
+SHA-256: e6adf7403ec5503ff01151c6d1243b819d627110a6bae2278f9492ecd0439593
+（コピー元 MelonLoader\Latest.log と一致確認済み）
+セッション範囲: 18:59:54.187（MelonLoader起動） 〜 19:00:49.616（終了）
+```
+
+### 119.2 パッチ自体は正常動作している - CONFIRMED
+
+起動ログにHarmonyパッチ登録エラーは見当たらず、
+`NativeMouseDragCheckPatch`は実際に1回発火してログを出力して
+いる。
+
+```text
+[19:00:25.900] [NocturneModernController] NATIVE-MOUSE drag=False stickUp=False stickDown=False.
+```
+
+これは`fldCamera.MouseDraggCheck()`が実際にHarmonyフックを
+経由して呼ばれ、Postfixが正常に動作していることを示す
+(パッチの技術的な失敗ではない)。
+
+### 119.3 `MouseDirection`は全セッション通じて非ゼロで一度も発火せず - CONFIRMED(否定的結果)
+
+```text
+NATIVE-MOUSE direction= 行の総数: 0
+```
+
+`NativeMouseDirectionPatch`は、`__0!=0 || __1!=0`のときのみ
+ログする設計(118.3節)であり、このセッション中
+**一度もその条件を満たさなかった**。すなわち、
+`fldCamera.MouseDirection(int, int)`は、呼ばれていたとしても
+常に`(0, 0)`であったか、そもそも一度も呼ばれていない
+(区別はこのログだけでは付かないが、いずれにせよ「非ゼロの
+マウスdirectionがカメラ計算へ渡った」形跡は皆無)。
+
+このセッションでは、`field116780`が`0x15C`から`0x16E`まで
+(18回)遷移しており(119.4節)、ユーザーの手順4
+「Guideを押している間／離している間」を複数回切り替える
+操作が行われたことがログ規模からも裏付けられる。それにも
+関わらず、`MouseDirection`の非ゼロ発火は一度もなかった。
+
+### 119.4 セッション概要
+
+```text
+Root26EntryTimeline STATE-CHANGE: 243件
+field116780: 0x15C 〜 0x16E（18回遷移）
+最初のentry LIVE化: 19:00:26.147
+（直前のNATIVE-MOUSE drag=Falseログ: 19:00:25.900、
+  約250ms前 - 時間的には近いが、drag=Falseは「ドラッグ
+  検出なし」を意味する否定的な値であり、この近さ自体は
+  積極的な証拠にならない）
+Root26Phase5（Overlayコールバック）: 0件
+```
+
+### 119.5 判定: R2
+
+ユーザー提示の判定基準に従い、**R2**
+（`MouseDirection`は常時ゼロ/変化なし → mouse説を後退させる）
+と判定する。
+
+**CONFIRMED**: 少なくとも`fldCamera.MouseDraggCheck()`/
+`MouseDirection()`という、13章で「Steam録画時に確認された
+mouse-dragカメラ経路」として特定されたAPIレベルでは、
+Guide押下・解放を複数回繰り返した今回のセッション中、
+カメラへ寄与しうる非ゼロのマウス入力は観測されなかった。
+
+**HYPOTHESIS(後退)**: Chapter117.7で提示した「Guide押下時の
+マウスカーソル移動がfldCamera.MouseDirection()経由でカメラへ
+加算される」という仮説(Q1)は、本セッションの直接観測に
+よって**支持されなかった**。これによりQ1の優先度を下げる。
+
+ただし、以下の点はUNRESOLVEDとして残る。
+
+- Chapter115.10で報告された「Guide押下時にマウスカーソルが
+  動いた」という現象自体を否定するものではない。カーソルが
+  実際に動いていたとしても、それが`fldCamera`の
+  `MouseDraggCheck`/`MouseDirection`という**特定の経路**を
+  通ってカメラ計算に影響していない、というだけである。
+  別の経路(Unity標準の`Input.GetAxis("Mouse X/Y")`等)を
+  ゲームが別途参照している可能性は、本節では調査していない。
+- 今回のテストで、ユーザーが実際に体感した「カメラ速度上昇」
+  再現できたかどうか自体は、本節の解析だけでは確認できない
+  (ログにカメラ回転速度そのものの記録はない)。
+
+### 119.6 次段への示唆
+
+R2が確定したため、ユーザー提示の優先順位
+「二重入力(Q2) → マウス重畳(Q1) → native camera/timestep(Q3)」
+に従い、次はQ3
+(native camera側のGuide/button modifierまたはtimestep/update
+回数変化)へ調査対象を移すのが妥当である。
+
+同時に、117.5節で構造的にCONFIRMEDしていたQ2
+(X軸がGuide後に恒常的なnative値へ切り替わる)についても、
+「押している間だけ」ではなく「Guide後は恒常的」という
+性質の違いを踏まえた上で、**ユーザーが実際に体感した現象が
+本当に可逆的だったのか(Guideを離すたびに毎回速度が戻って
+いたか)を再確認する価値がある**。もし実際には「Guide後は
+ずっと速いままだったが、たまたまGuideを離すタイミングと
+観測終了が重なった」というケースであれば、117.5節のX軸
+恒常化仮説(Q2)が再浮上する。この点はユーザーへの確認事項
+として次段の冒頭に置くことを提案する。
+
+この節では新規コードの実装・ビルド・デプロイは行っていない。
+
+本節時点でGit commit/pushは行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+
+## 120. ユーザー確認: 「確実に押している間だけ」= 可逆現象と確定。既存kernel loop頻度ログは相関判定に不十分
+
+### 120.1 ユーザー証言
+
+> 確実に押してる間だけでした
+
+これは119.6節末尾でユーザーに確認を依頼していた質問
+(「Guideを離すたびに毎回速度が戻ったか、それとも一度速く
+なった後はGuideを離しても速いままだったか」)への回答である。
+
+**CONFIRMED(ユーザー報告として)**: カメラ速度上昇は
+Guideを物理的に押している間だけ発生し、離すたびに毎回
+通常速度へ戻る、**完全に可逆な現象**である。
+
+### 120.2 この確認が仮説へ与える影響
+
+- **Q2(117.5節、X軸のnative恒常化)は棄却**。X軸が
+  Guide後に恒常的にnative値へ切り替わるという構造は
+  CONFIRMED済みだが、これは「一度切り替わったらセッション中
+  ずっとそのまま」という**不可逆**な性質であり
+  (105/108/110章でentry.x/yがセッション終了までLIVEを
+  維持することと整合)、今回確定した「押している間だけ」
+  という**可逆性**とは構造的に相容れない。したがってQ2は
+  今回の現象の主因からは除外する。
+- **Q1(117.7節、mouse-drag経路)は119章のR2により既に後退
+  済み**。今回の可逆性確認は、Q1的な「物理的に押している間
+  だけ何らかの入力が生じ、離せば止まる」という枠組み自体は
+  否定しないが、少なくとも`fldCamera.MouseDraggCheck`/
+  `MouseDirection`という具体的な経路では観測されなかった
+  (119章)。
+- 残るのは**Q3(native camera側のGuide/button modifierまたは
+  timestep/update回数変化)**であり、かつ「押している間だけ」
+  という可逆性の性質上、**Guideボタンの物理的な押下状態
+  そのものを何らかの形で参照する条件分岐**が native camera
+  コード側(または、Guide押下中だけ発火する何らかの
+  update/frequency変化)に存在する可能性が高まった
+  (HYPOTHESIS)。
+
+### 120.3 既存ログでの簡易相関チェック - 不十分と判断(新規実装なし)
+
+Chapter118のログに含まれる既存`Root26KernelLoop`
+HEARTBEAT(`m_dds3KernelMainLoopCalls`・
+`FramerateModOnFixedUpdateCalls`、約2秒間隔)から、
+区間ごとの`m_dds3KernelMainLoopCalls`増分(呼出し頻度)を
+算出したところ、およそ296〜349回/秒の範囲で変動していた。
+複数の区間でやや低い値(296、315、309回/秒等)が見られたが、
+**Guide押下の正確な開始・終了時刻を示すマーカーがログ中に
+存在しないため、これらの変動が実際にGuide押下タイミングと
+対応しているのかどうかを判定する材料がない**。約2秒間隔の
+粗いバケットでは、ユーザーが数秒単位で行うGuide押下/解放の
+サイクルを正確に相関させるには解像度が不十分である
+(UNRESOLVED、新規実装は行っていない)。
+
+### 120.4 次段の選択肢(ユーザー確認待ち、未実装)
+
+以下のいずれか、またはユーザーが指示する別方針で進める。
+
+- (a) `calcCamNormal()`/`fldCamMain()`のnative逆アセンブルを
+  再度行い、Guide/Steamボタン相当の入力(または関連する
+  デジタルアクション状態)を条件とした速度・timestep分岐が
+  存在するかを、read-onlyのzero-base静的解析で確認する。
+- (b) Guide押下状態そのものを直接観測できる、より高頻度・
+  軽量な新規probe(Chapter115の教訓を踏まえ、`Process.Modules`
+  等の重い処理を避けた設計)を実装し、Guide押下区間と
+  `m_dds3KernelMainLoopCalls`増分・カメラ関連フィールドの
+  変化を直接相関させる。
+- (c) `Root26KernelLoopFrequencyProbe`のHEARTBEAT間隔を
+  一時的に短縮(例: 250ms〜500ms)し、次回実機テストで
+  より高解像度の頻度データを取得する(既存probeの設定変更
+  のみ、新規ロジック追加なし)。
+
+この節ではコードの実装・変更・ビルド・デプロイは一切
+行っていない。
+
+本節時点でGit commit/pushは行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+
+## 121. Guide押下中のみカメラ速度が上がる原因のnative camera zero-base静的解析 - S4は否定、S1/S2/S3は本節の範囲では未確定
+
+### 121.1 手法
+
+`C:\tmp_cpp2il_out\IsilDump\Assembly-CSharp\fldCamera.txt`
+(Cpp2IL ISIL、15123行)と
+`C:\tmp_cpp2il_out2\DiffableCs\Assembly-CSharp\fldCamera.cs`
+(フィールドオフセット付きC#疑似ソース)を主対象に、
+`calcCamNormal()`(3776〜5117行、約1341行)・`fldCamMain()`
+(11966〜13251行)を中心にread-onlyで解析した。コード変更・
+新規probe・build・deployは一切行っていない。
+
+### 121.2 S4(`LastInputIndex`/`GetCurrentControlDevice`直接参照) - CONFIRMED(否定的結果)
+
+`fldCamera.txt`全体で`SteamInputUtil.get_Instance()`
+(RVA `0x25FC4B0`)への呼び出しは3箇所のみ
+(`MouseDirection()`内・`calcCamMiwatasi()`内・
+`fldCamMain()`内)。**いずれも、呼び出し直後に読んでいるのは
+`+0x58`オフセットのみである**ことを確認した。
+
+`C:\tmp_cpp2il_out2\DiffableCs\Assembly-CSharp\SteamInputUtil.cs`
+のフィールド定義より、`+0x58`は
+
+```csharp
+private SteamMouse steam_mouse; //Field offset: 0x58
+```
+
+であることがCONFIRMED済み(113章で確認した`LastInputIndex`は
+`+0x28`)。すなわち、`fldCamera`が`SteamInputUtil`経由で
+参照しているのは**`steam_mouse`(SteamPadとは別の、Steam
+Input側の仮想マウスオブジェクト)のみ**であり、
+`LastInputIndex`・`GetCurrentControlDevice()`関連フィールド
+(`+0x28`〜`+0x3C`)への直接アクセスは**fldCamera内の
+どこにも存在しない**。
+
+**CONFIRMED(否定的結果)**: S4(`LastInputIndex`/
+`GetCurrentControlDevice`状態がcamera calculationへ直接入る)
+は、少なくとも`fldCamera`クラス自身のコードでは**成立しない**。
+Chapter113/114で追跡した`LastInputIndex`の状態遷移と、
+今回のカメラ速度上昇は、少なくともこの直接参照という形では
+接続していない。
+
+### 121.3 `MouseDirection()`が参照するのは実OSマウスではなく`SteamMouse`(Steam Input側仮想マウス) - CONFIRMED、119章R2の意味を補強
+
+`MouseDirection(ref int _x, ref int _y)`のISIL(69〜203行)を
+確認したところ、`steam_mouse`オブジェクトの`+0x24`/`+0x28`
+(float、x/y相当と推定)を読み、それが両方ゼロに近ければ
+早期return(`_x`/`_y`へ触れない)し、非ゼロであれば方向を
+8方向程度に離散化して`_x`/`_y`へ`128`/`-128`/`0`等の
+固定値を書き込む、という実装だった。
+
+これは119章の否定的結果(R2: `MouseDirection`が全セッション
+通じて非ゼロで発火しなかった)を裏付ける。すなわちこの経路は
+**実OSマウスのハードウェア入力ではなく、Steam Input自身が
+保持する`steam_mouse`という仮想マウス状態**を参照しており、
+119章のテストではこの`steam_mouse`状態が終始ゼロ(または
+`(0,0)`近傍)だったことになる。これはChapter115.10の
+「マウスカーソルが動いた」という目視観測とは、直接には
+矛盾しないが接続もしない(カーソル移動が実際に発生していても、
+それが`steam_mouse`のfloat状態に反映されるとは限らない)。
+
+### 121.4 S1/S2(倍率分岐・update回数分岐) - 本節の範囲では未確定
+
+`calcCamNormal()`内の乗算命令(17件)・デジタルボタンチェック
+呼出し(`0x18222BD70`、7件)を洗い出し、主要な乗算箇所を
+確認した。
+
+`[obj+0xE0]`・`[obj+0xDC]`を係数とする乗算を複数発見したが、
+`fldCamera.cs`のフィールド定義と突き合わせた結果、これらは
+
+```csharp
+private static float fViewDist;        // 0xDC
+private static float fViewMaxDistance; // 0xE0
+```
+
+すなわち**カメラの視点距離(ズーム)に関する補間処理**であり、
+回転速度(上下/左右パン速度)に直接関係する乗算ではなかった
+(否定的結果)。
+
+`[0x182E4CC10+184]`という、`fldCamera`とは別の(まだ型が
+特定できていない)静的領域への`+0x38`アクセスも発見したが、
+`fldCamera.CameraMoveUD`も偶然同じオフセット`0x38`を持つため、
+**この2つを同一視すると98章で戒めたオフセット一致による
+誤同定の危険がある**。`0x182E4CC10`が実際にどの型の静的
+フィールドキャッシュなのかは、本節の時間内では特定できて
+いない(`dds3UnitObjectBasic`・`fldPlayer`・`fldProcess`等、
+多数のfield関連クラスから共通して参照されているため、
+`fldGlobalWork`相当の共有グローバル状態である可能性が高いが
+HYPOTHESISに留める)。
+
+**現状の判定**: S1(button/device-state依存の倍率分岐)・
+S2(camera update回数を変える分岐)のいずれも、
+`calcCamNormal()`の前半(約830行/1341行)の範囲では
+明確な該当箇所を発見できなかった。関数の残り約500行、および
+`fldCamMain()`本体(約1285行)は、本節の時間内では未着手
+である。
+
+### 121.5 ツールの限界に関する率直な報告
+
+`pefile`+`capstone`による直接逆アセンブルと、Cpp2ILの
+ISIL/diffable-cs出力の組み合わせでは、**ローカル変数・
+複数の類似オフセットを持つ別クラスの静的領域が入り混じる
+大規模関数(calcCamNormal・fldCamMain、いずれも1000行超)を
+シンボル情報なしで読み解く作業**は、既存の`docs/research`内
+過去記録(65章・97章)で繰り返し確認されてきた通り、非常に
+時間を要し、誤同定のリスクも高い。今回、`0xDC`/`0xE0`という
+一見有望な候補が実際には無関係(ズーム距離)だった点は、
+まさにこのリスクを示す実例である。
+
+### 121.6 次段の選択肢(ユーザー確認待ち、未実装)
+
+- (a) `calcCamNormal()`の残り約500行、および`fldCamMain()`
+  本体を、時間を掛けて引き続き静的に読み進める
+  (低速だが安全、追加コストが高い)。
+- (b) `0x182E4CC10`の型を先に特定してから
+  (`fldGlobalWork`等の候補を`.cctor()`や複数クラスの
+  参照パターンから絞り込む)、`+0x38`アクセスの意味を
+  再評価する。
+- (c) 静的解析をここでいったん保留し、`fldCamera.CameraMoveUD`・
+  `mMoveUD`・`mMoveLR`など、DiffableCsで名前が確定している
+  カメラ関連フィールドを直接runtimeで軽量観測する新規probe
+  (Chapter115の教訓を踏まえた設計)を実装し、Guide押下/解放と
+  これらフィールドの値・変化速度を直接相関させる
+  (静的解析より速く答えが出る可能性がある)。
+- (d) Ghidra等、型推定・シンボル復元が可能なより強力な
+  デコンパイラでの再解析を検討する(セットアップコストは
+  かかるが、この規模の関数には静的解析の精度・速度の両面で
+  有利)。
+
+この節ではコードの実装・変更・ビルド・デプロイは一切
+行っていない。
+
+本節時点でGit commit/pushは行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+
+## 122. 状態リセット試験の計画: Windows再起動を挟んだクリーン状態での再現性確認(Chapter115残留状態説の切り分け)
+
+### 122.1 背景・動機(ユーザー指摘)
+
+ユーザーより、現在のカメラ高速化現象の解析を先に進める前に、
+**Chapter115の異常セッション(probeが`Process.Modules`を
+毎フレーム列挙し、ゲーム全体が著しく低速化した回)に何らかの
+状態変化が発生し、それが以後のセッションに残留している
+可能性**を切り分けるべきという指摘があった。
+
+根拠として次の時系列が挙げられた。
+
+- Chapter115でのみゲーム全体が著しく低速化した。
+- 同じ頃(Chapter115.10)、マウスカーソル移動も初めて報告された。
+- その後になって「Guideを押している間だけカメラ速度が
+  上がる」ことに気付いた。
+- Chapter118の通常セッションではmouse telemetry
+  (`MouseDirection`)は反応しなかった(119章、R2)。
+
+これらの時系列が偶然の一致なのか、Chapter115のセッションで
+何か(OS・Steam・ドライバ・reWASD等のいずれかの層)に残留した
+状態が原因なのかは、現時点では**未検証**である。したがって、
+「Guideを押している間だけカメラが速くなる」ことを
+**SMT3HD本来のGuide仕様として扱う前に**、Windows再起動を
+挟んだクリーン状態での再現性を確認する。
+
+### 122.2 保全状況の確認(ユーザーからの依頼「保全お願いします」への回答)
+
+再起動前の時点で、保全すべき新規データがないことを確認した。
+
+```text
+現在のMelonLoader\Latest.log: 19:00:49終了
+  = investigations\ROOT26_LOGS\Root26_Chapter118_2026-09-08_190049.log
+    (SHA-256: e6adf7403ec5503ff01151c6d1243b819d627110a6bae2278f9492ecd0439593)
+    と同一内容、既に保存・ハッシュ確認済み。
+```
+
+Chapter120での「確実に押している間だけでした」という
+ユーザー証言は、新しいログセッションを伴わない口頭確認
+だったため、追加で保存すべきログファイルは存在しない。
+デプロイ済みDLLもChapter118時点のビルド
+(mouse telemetry有効版、SHA-256
+`ee87e4370cfbc50cdb46500e535143037a939df13b05e670a51185d9cc8d6a8c`)
+のまま変更していないため、再起動後もそのまま同一のprobe構成で
+テストを継続できる。
+
+### 122.3 試験手順(ユーザー提示、そのまま採用)
+
+```text
+1. ゲームを完全終了。
+2. Steamも完全終了。
+3. Windowsを再起動。
+4. reWASD等はいつもの通常状態のまま。
+5. SMT3HDを通常起動。
+6. RSTICKをGuideでLIVE化。
+7. LIVE後にGuideを押しっぱなしにして、カメラ高速化が
+   まだ発生するか確認。
+```
+
+### 122.4 判定枠組み
+
+- **再起動後も発生する**:
+  Chapter115由来の一時的な残留状態説は弱くなり、
+  「Guide押下状態そのものに紐づく、再現性のある現象」として
+  扱ってよい。121章のnative camera静的解析(または119章で
+  検討した軽量runtimeフィールド観測)を継続する。
+- **再起動後は発生しない**:
+  Chapter115の異常セッション(または、それに付随した何らかの
+  操作・状態)が原因である可能性が高まる。この場合、
+  121章のcamera演算解析へ進む前に、**異常状態そのものの
+  発生条件**(何が・いつ・どのレイヤーで残留したのか)を
+  先に切り分ける必要がある。
+
+### 122.5 現状
+
+実機再起動待ち。この節ではコードの実装・変更・ビルド・
+デプロイは一切行っていない。
+
+本節時点でGit commit/pushは行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+
+## 123. Guide押下中のカメラ加速: 再起動後の再現confirmed、native入力固定下でのyaw約3.4倍バーストのCONFIRMED
+
+### 123.1 122章の実機再起動テスト結果(動画1: 284C3827E7051C67.mp4) - CONFIRMED
+
+122章で計画したWindows再起動後のクリーン状態テストが実施され、ユーザーから
+実機動画(`284C3827E7051C67.mp4`、2560x1440、約59.87fps、24.8秒)が
+提供された。動画からフレームを抽出し、ミニマップの方位コンパス
+(N/E/S/Wと視野コーンの画像処理によるトラッキング)およびオプティカル
+フロー解析(Farneback、read-only)を用いて解析した。コード変更・build・
+deployは一切行っていない。
+
+**CONFIRMED**:
+
+- Windows再起動後のクリーン状態でも、Guide押下中のカメラ横回転加速が
+  再現した。これによりChapter115由来の一時的な残留状態説は後退し、
+  「Guide押下状態そのものに紐づく、再現性のある現象」として扱う
+  (122.4節の判定枠組みに基づく)。
+- 横回転(ヨー)に、時間的に連続する3つの明確に安定した角速度区間が
+  存在した: 約`-43.7deg/s`(1.5秒)→約`+47.6deg/s`(1.7秒、逆方向)→
+  約`-10.3deg/s`(4秒)。倍率は前2者/後者で約4.2〜4.6倍。
+- **ユーザー確認済み**: 高速区間・通常区間とも右スティックは全開まで
+  倒していた。したがって「スティック倒し量の違い」が速度差の主因という
+  代替説明は大幅に後退する。
+- 縦方向(ピッチ)のオプティカルフローは動画全体を通じてほぼゼロ
+  (dy中央値の最大絶対値0.657、dxの最大絶対値7.41に対して無視できる
+  水準)。この動画では縦方向の入力は行われていない。
+- 動画内に一切のコントローラー入力オーバーレイが存在しないため、
+  「Guide ON/OFFの正確なタイミング」は動画単体からは直接確認できない
+  (`HYPOTHESIS`寄りの部分として、区間の並び・倍率の一貫性から
+  Guide押下区間を推測したのみ)。
+
+### 123.2 縦方向動画(動画2: 6C22F05179F1CDA8.mp4)の解析 - 移動・ジャンプなし条件下での加速確認、正確な倍率はUNRESOLVED
+
+ユーザーより、移動・ジャンプは一切行っていないとの証言(このMODの
+ダッシュ走行アニメーションを誤ってジャンプと解釈した点は訂正済み)。
+同じ手法でオプティカルフロー(縦方向dy)を解析した。
+
+**CONFIRMED**:
+
+- t≈23.5〜27.5秒(ユーザー申告: Guide OFF/通常)に、キャラクターが
+  画面内で縮む→戻る→縮むという滑らかな連続変化があり、同一の部屋・
+  同一の壁面のままだった(移動・ジャンプでは説明できない、カメラ距離/
+  pitchの実際の変化)。
+- t≈22.2〜22.4秒およびt≈28.9〜29.1秒に、同程度の見た目の変化が
+  0.2秒程度というごく短時間で起きる急変が確認できた。
+
+**HYPOTHESIS(未確定のまま)**:
+
+- 上記の急変区間がGuide押下に対応するという解釈は、ユーザーの記憶に
+  基づく時系列証言との整合はあるが、動画に直接のGuide状態表示が
+  ないため確定はできない。
+- 積算移動量ベースで概算した倍率は約5.6倍〜26倍と幅が大きく、
+  急変区間が「保持」ではなく瞬間的な「スナップ」動作だったため、
+  オプティカルフローの追跡精度低下(高速動作でのモーションブラー/
+  エイリアシング)により実際の倍率を過小評価している可能性がある。
+  **正確な縦方向倍率はUNRESOLVEDのまま。**
+
+### 123.3 (旧)Chapter122 probe実装 - CameraMoveDir/CameraMoveLR/mMoveLRはcamera yaw出力の観測に不適 - CONFIRMED(否定的結果)
+
+121.6(c)節の提案に基づき、`fldCamera.CameraMoveDir`(float, 0x3C)・
+`fldCamera.CameraMoveLR`(float, 0x34)・`fldCamera.mMoveLR`(int, 0x14)
+を観測するHarmony postfix probe(`src/Chapter122GuideYawCorrelationProbe.cs`)
+を実装し、real-machine test(2026-09-08 19:59:18〜19:59:45、約27秒、
+132サンプル)を実施した。
+
+**CONFIRMED(否定的結果)**:
+
+- `nativeX`(`GetPadAnalog(0,1,0,1)`)はテスト全体で0〜156まで大きく
+  変動していたにもかかわらず、`CameraMoveDir`はテスト全体を通じて
+  **完全に60.0000固定**(1回も変化せず、`yawDelta`も常に0.0000)。
+- `CameraMoveLR`は2.5または4.5の2値のみ、`mMoveLR`は0または-1の
+  2値のみで、いずれも`nativeX`の大きさと無相関だった。
+- 結論: これら3フィールドは、名前から想定した「camera yaw出力」の
+  直接観測には**不適**である。`CameraMoveDir`はFOVのような固定
+  設定値である可能性が高い。フィールド名だけからsemanticを推測する
+  ことの危険性を示す実例として記録する。
+
+### 123.4 Chapter123 probe: `flgCameraCtrl`(実UnityEngine.Camera)のTransformによるyaw/pitch再構築
+
+123.3節の否定的結果を受け、fldCameraの独自フィールド名を一切信頼せず、
+121章で型確定済みの`fldCamera.flgCameraCtrl`(`private static Camera`、
+DiffableCs確認済み)が持つ実際の`UnityEngine.Transform`から、
+Unity自身が管理する`forward`ベクトルを使って幾何学的にyaw/pitchを
+算出するprobe(`src/Chapter123CameraOrientationProbe.cs`)に置き換えた。
+
+```csharp
+yaw   = atan2(forward.x, forward.z)
+pitch = atan2(forward.y, sqrt(forward.x^2 + forward.z^2))
+```
+
+診断用に`g_cameraPos`/`g_targetPos`から同様に算出した
+`yawFromVec`/`pitchFromVec`も併記し、名前だけに頼った旧
+`CameraVectorProbe`(dormant)の前提を実証的に検証できるようにした。
+
+`GetPadAnalog(0,1,1,1)`(Right Stick Y)については、
+`NativeRightStickCameraPatch`(既存のMOD上書きpostfix、Normal優先度)
+より前に実行される`[HarmonyPriority(Priority.First)]`postfixで
+native値(上書き前)を、後に実行される`[HarmonyPriority(Priority.Last)]`
+postfixで実効値(上書き後)を、同一呼び出しから区別して記録する設計と
+した。読み取り専用(`__result`・fldCameraの各fieldとも一切書き込みなし)。
+Chapter115の教訓を踏まえ、`fldCamMain`側フックはint加算のみとし、
+ログは探索中・スティック中心値±20超・前回値から変化ありの場合のみ
+100msスロットリングで出力する。
+
+clean build・deploy・SHA-256一致確認(`742d8813b6...`)を実施。
+Git commit/pushは行っていない。
+
+### 123.5 実機テスト結果(2026-09-08 20:45:01〜20:46:29、約81秒、569サンプル) - CONFIRMED
+
+`MelonLoader/Latest.log`(SHA-256 `84b47816e9...`)を解析前に
+`investigations/ROOT26_LOGS/Root26_Chapter123_2026-09-08_204629.log`
+へ保全し、ハッシュ一致を確認済み。**この実機テストは動画記録なし。**
+以下はログ単体からの解析であり、Guide ON/OFFの直接マーカーは
+存在しないため、Guide区間そのものを断定するものではない。
+
+**CONFIRMED — 横方向(yaw)**:
+
+t=0〜19秒、`nativeX`が**完全に0で固定**(全開のまま一切変化なし)、
+`effectiveY`が128付近(中立)という区間内で、yaw変化速度
+(`Mathf.DeltaAngle`相当のwrap補正込みで算出)に2つの明確に異なる
+速度域が周期的に出現した。
+
+```text
+通常域: n=102サンプル、中央値 約134.5 deg/s
+高速域: n=21サンプル、 中央値 約461.9 deg/s (バースト)
+倍率  : 約3.4倍
+```
+
+高速域の出現タイミング(t、開始からの相対秒): 約0.2-0.3, 2.4-2.7,
+7.8-8.0, 11.0-11.3, 15.1-15.4, 18.0-18.3秒。いずれも0.1〜0.4秒程度の
+短い区間。**この間、`nativeX`は文字通り一度も変化していない
+(常に0)**。
+
+`camMainCallsThisFrame`はログ全体(569件)を通じて`0`(416件)か
+`2`(153件)のみで、上記の高速域とそれ以外とで分布に有意な違いは
+見られなかった。
+
+**CONFIRMED — 追加事実**: このテスト全体を通じて`effectiveY`と
+`nativeYRaw`は一度も差分がなかった(0/569件)。すなわち
+`SdlRightStickInput.HasLiveInput`によるMOD側Y上書き経路は本テスト中
+一度も発動しておらず、**観測された現象はMODのSDL入力層を経由しない、
+100% native(vanilla)の入力・カメラ経路上で発生している。**
+
+**未確定 — 縦方向(pitch)**: `effectiveY`を0または255付近に固定した
+状態でのpitch変化速度を確認したが、単発の加速→減速カーブ(1回の
+プッシュ動作のように見える山型)が繰り返されているように見え、
+横方向のような「一定速度→数倍→また一定速度」という明確な二値
+パターンは本ログでは確認できなかった。ピークは概ね80〜150deg/s、
+まれに200〜245deg/sに達する瞬間もあるが、横方向ほどクリーンに
+分離できない。Guide区間が不明なため、この点はUNRESOLVEDのまま
+とする。
+
+### 123.6 判定(ユーザー確定のV1〜V4定義に基づく)
+
+判定基準(ユーザー提示、本章で確定):
+
+- **V1**: native入力は同じなのにyaw/pitch deltaだけ増加 → camera gain側。
+- **V2**: 1updateあたりのdeltaは同じだがcall countが増加 → update frequency側。
+- **V3**: 入力値そのものがGuide中に変化 → input/Steam側。
+- **V4**: yaw/pitch両方がほぼ同倍率で増える → axis個別処理より
+  camera共通処理を支持。
+
+**横方向についての判定**:
+
+- **V1(camera gain側): 強く支持。** `nativeX`が完全に固定された
+  状態で、出力(yaw変化量)だけが約3.4倍に変化する区間が複数回
+  確認された。
+- **V2(update frequency側): 否定。** `camMainCallsThisFrame`は
+  高速域でも変化しなかった。
+- **V3(input/Steam側): 否定。** `nativeX`自体は高速域・通常域を
+  通じて一切変化しなかった。
+- **V4(横縦共通): 本ログでは判断保留。** 縦方向に横方向と同様の
+  明確な二値速度パターンが確認できなかったため。ただし縦方向でも
+  Guide押下時の加速自体は123.2節・ユーザーの実機観察で別途確認
+  されており、「縦横共通のcamera処理起因」という仮説自体を
+  否定するものではない。
+
+### 123.7 結論と次の方針
+
+横方向について、「native入力固定・出力(yaw)約3.4倍・
+`fldCamMain`呼び出し回数は不変」という、動画に頼らずログ単独で
+再現性のある強いEvidenceが得られた。これにより、原因候補は
+
+- 「Guide中にスティック入力自体が大きくなる」(V3系仮説)
+- 「Guide中にカメラ更新回数が増える」(V2系仮説)
+
+のいずれでもなく、**「同一のnative入力をcamera回転量へ変換する
+過程の途中にある倍率・時間係数・状態が、Guideによって変化する」**
+という仮説(V1)に強く絞られた。
+
+縦方向の正確な倍率測定(録画付き再撮影)は優先度を下げ、次段では
+横方向で得られたこの強い証拠を元に、`calcCamNormal()`/`fldCamMain()`
+のnative実装を対象に、134deg/sと462deg/sを分ける具体的な係数・
+状態変数をstatic解析で特定する(Chapter124、実装はまだ行わない)。
+
+本節時点でGit commit/pushは行っていない。
+
+
+## 124. native camera dataflow zero-base static解析(Ghidra) - `mAxis`/`mAcceleration`とcamera約3.4倍加速のSTRONG相関のCONFIRMED
+
+### 124.1 手法
+
+Chapter121.5で報告した「Cpp2ILのISIL+pefile/capstoneだけでは大規模関数のdataflow復元が困難」という限界を受け、既存の`C:\Users\tanat\ghidra_project\Root26Project`(GameAssembly.dll、headless analyzeHeadless経由)を用いた疑似Cデコンパイルへ切り替えた。`ghidra_scripts\analyze_chapter124_*.py`として保存済み。対象関数は既知RVA(`fldCamMain`=0x2027200、`calcCamNormal`=0x2020E80、doc 3.3節)から`CreateFunctionCmd`で関数境界を作成し`DecompInterface`でデコンパイルする、read-only手法。コード変更・build/deployは行っていない。
+
+### 124.2 fldCamMain()の入口フラグは離散ゲートに過ぎない - CONFIRMED
+
+`fldCamMain()`を疑似Cで確認した結果、`GetPadAnalog(0,1,0,1)`(X)・`GetPadAnalog(0,1,1,1)`(Y)の戻り値は、乗算を一切経由せず、共有のdeadzone閾値(`func_0x0001822cee60`の呼び出し元とは別の、deadzone取得ヘルパー)との比較だけで`mMoveLR`(offset 0x14)・`mMoveUD`(offset 0x18)という**離散フラグ**(-1/0/1相当)に変換されていた。これはChapter122で実機観測した「`mMoveLR`が-1/0の2値しか取らなかった」事実と一致する。
+
+**CONFIRMED**: `mMoveLR`/`mMoveUD`はスティックが閾値を超えたかどうかの離散ゲートであり、`fldCamMain()`自体には回転量を決める乗算は存在しない。実際の回転処理は、いずれかのフラグが立った場合にのみ呼ばれる`FUN_18201ece0`(native VA `0x18201ECE0`)に委譲されている。
+
+### 124.3 `FUN_18201ece0`: 実際のnative右スティックcamera回転処理 - CONFIRMED
+
+`FUN_18201ece0`は`nativeX`/`nativeY`を(SteamMouse dx/dyが両方ゼロの場合に限り)`nativeX-128`/`128-nativeY`として**改めて連続値で読み直し**、`fldCamera.mAxis`(前フレームの蓄積値)から`fldCamera.mAcceleration`を算出したうえで、X/Y軸それぞれ以下のいずれかの経路で回転を適用する:
+
+- **Path A(閾値+固定step)**: `mAxis.{x,y}==0`(直前フレームまで停止)、または`func_0x00018201cc50(0)`が真、またはR1/R2(X軸)・L1/L2(Y軸、`SDF_PADMAP`のID 8/9/10/11と一致するID経由の別のaction-lookup関数`func_0x0001822a2850`/`func_0x0001822a29b0`で判定)が押されている場合。閾値判定用の加減算方向は`func_0x0001822cee60(6/7/8/9)`で決め、`fldCamera.CameraMoveLR`/`CameraMoveUD`(Chapter123実測で2.5〜4.5のほぼ固定値)を、fldCameraとは別のグローバル領域`0x182E4CC10+0x34`へ加減算する。
+- **Path B(mAcceleration経由)**: 上記以外(直前フレームも動いていて、`func_0x00018201cc50`が偽、かつR1/R2・L1/L2も押されていない場合)の、継続的にスティックを倒し続けている間のデフォルト経路。
+
+**CONFIRMED(否定的結果)**: この経路で見つかった以下の関数は、いずれもGuideとは無関係と静的に確定した。
+- `func_0x0001822cee60`(N=6/7/8/9): 境界チェック付きの汎用「論理アクション配列の添字アクセス」。SteamInputUtil/SteamPad/Guide系コードへの接続なし。
+- `func_0x00018221bd20`: 武器/装備モデルのボーン・アニメーターパラメータのブレンド処理。カメラ回転とは無関係な「装備切替中はこの回のカメラ更新をスキップする」ガードだった。
+- `func_0x0001822a6290`(N=4/5/6/7、`MouseDraggCheck()`から呼ばれるのと同じ関数): 当初「steam_mouseの仮想マウスボタン」説を立てたが、精査の結果`SteamInputUtil+0x60`(steam_mouseの`+0x58`とは別フィールド)を参照する、ゲーム自身のバインディング設定テーブル(`_DAT_182e48a48`)とのID照合処理であり、**steam_mouseとは無関係と判明、この仮説はREJECTする**。
+
+### 124.4 `func_0x00018201cc50` = `fldCamera.MouseDraggCheck()` - CONFIRMED(構造的同定)
+
+`func_0x00018201cc50`のデコンパイル結果(`func_0x0001822a6290`を引数5→4→6→7の順にOR条件で呼び出すだけの、他に分岐のない短い関数)は、本調査の初期に確認済みの`fldCamera.MouseDraggCheck()`の呼び出し列(同じ関数を同じ引数順で呼ぶ)と完全に一致した。既存の`NativeMouseDragCheckPatch`(`src/NativeMouseVerticalCameraPoc.cs`、`[HarmonyPatch(typeof(fldCamera), "MouseDraggCheck")]`、Chapter118で有効化済み)が同一メソッドを対象としていることから、**`func_0x00018201cc50`は`fldCamera.MouseDraggCheck()`である**とCONFIRMEDとする(raw addressの直接呼び出しではなく、既存の名前付きIl2Cppメソッドとして観測可能)。
+
+### 124.5 Chapter124 probe実装
+
+`src/Chapter124CameraGainProbe.cs`として、以下を同一timestampで観測するread-only probeを実装した(Chapter123の`Chapter123CameraOrientationProbe`を置き換え、ModMain.csで無効化コメント化):
+
+- `nativeX`/`nativeYRaw`/`effectiveY`(Chapter123と同一方式)
+- `fldCamera.MouseDraggCheck()`の戻り値(`Chapter124MouseDraggCheckWatch`、既存`NativeMouseDragCheckPatch`とは独立した2つ目のpostfix)
+- `fldCamera.mAxis.x/y`・`fldCamera.mAcceleration.x/y`(既存の`NativeMouseDirectionPatch`と同じ確定済みfield)
+- `fldCamera.CameraMoveLR`/`CameraMoveUD`
+- `flgCameraCtrl.transform.forward`から幾何学的に算出した真のyaw/pitch(Chapter123の手法を継承)
+- `camMainCallsThisFrame`
+
+clean build・deploy・SHA-256一致確認(`0b682552ce...`)を実施。Git commit/pushは行っていない。
+
+### 124.6 実機テスト結果(2026-09-08 22:09:56〜22:10:33、約31秒、249サンプル) - CONFIRMED
+
+`MelonLoader/Latest.log`(SHA-256 `dd393234...`)を解析前に`investigations/ROOT26_LOGS/Root26_Chapter124_2026-09-08_221033.log`へ保全、ハッシュ一致確認済み。テスト条件: 右スティック横を全開で同一方向へ保持したまま、**通常(Guide OFF)約3秒→Guide ON約1秒**(2秒以上のGuide長押しはAlt+Tab相当の切り替えが発動するため、ユーザーが意図的に1秒以内に収めている)を7回繰り返した。
+
+**CONFIRMED**:
+
+- `MouseDraggCheck()`(=`func_0x00018201cc50`)の戻り値は、テスト全体(249サンプル、約31秒)を通じて**一度も`True`にならなかった**。すなわちこの分岐ゲート自体はGuide中加速の直接の切替スイッチではない。
+- `nativeX`(native `GetPadAnalog(0,1,0,1)`)はテスト前半(t=0〜26秒、スティックを一方向に全開保持していた間)を通じて**完全に0のまま一度も変化しなかった**。
+- `fldCamera.mAxis`/`fldCamera.mAcceleration`は、通常は`(0,0)`だが、**7回中7回とも**、0.2〜0.5秒間だけ大きな非ゼロ値(`mAxis.x`が概ね-3700〜-1400、`mAcceleration.x`が概ね-31〜-12)を取る区間が現れた。これらの区間の開始間隔は約3.4〜5.2秒(平均約4.1秒)で、ユーザー申告の「3秒OFF+1秒ON」という約4秒周期の実施サイクルと一致する。
+- 上記7区間それぞれについて、区間直前1秒間・区間中・区間直後1秒間のyaw角速度(`flgCameraCtrl.transform`由来、wrap補正込み)を比較したところ、**7回とも直前・直後は約134〜137deg/s(符号は方向次第)で安定していたのに対し、区間中だけ約417〜502deg/sへ跳ね上がった**(倍率は約3.1〜3.7倍、平均約3.4倍でChapter123の実測とほぼ一致)。
+
+**判定(ユーザー確定の枠組みに基づく)**:
+
+- **REJECT**: `MouseDraggCheck`/`func_0x00018201cc50`がGuide中加速の切替ゲートであるという仮説。テスト全体で一度も`True`にならなかった。
+- **REJECT**: native入力値(`nativeX`)自体がGuide中に変化するという仮説。テスト前半、`nativeX`は完全に不変だった。
+- **STRONG**: Guide ON区間相当のタイミングと、`fldCamera.mAxis`/`fldCamera.mAcceleration`が非ゼロになるタイミングの相関。7/7の周期一致は動画に頼らない、ログ単独としては非常に強いEvidenceである。
+- **UNRESOLVED**: Guideボタンの押下状態そのものが`mAxis`を直接書き換えているのか、それともGuide押下に伴う別のSteam Input側の状態変化(action set切替・device re-evaluation等、Chapter15/HANDOFF.md系で既出の候補)を経由して`mAxis`が影響を受けているのかは、**今回Guide状態そのものを直接ログしていないため未確定**のまま扱う。「7/7周期一致」は強い相関だが、Guide→mAxisの直接因果を証明するものではない。
+- **UNRESOLVED**: 過去の章で追っていた「Guide押下によるRight Stick DEAD→LIVE復活」問題と、今回の`mAxis`変化が同一の上流Steam Input state に起因するかどうかは、**現時点では有力候補だが未確定**。`mAxis`のwriter/update dataflowをSteamInputUtil/SteamPad側まで遡って初めて判断できる。
+
+### 124.7 次の方針
+
+runtime probeをこれ以上増やさず、まず`fldCamera.mAxis`/`fldCamera.mAcceleration`のwriter(全write site)をstaticに追跡し、「native右スティック値(`nativeX`)は同一なのに、Guide区間相当だけ`mAxis`が非ゼロになる」原因を、`func_0x0001822a5110(0)`の正体も含めて特定する。上流でSteamInputUtil/SteamPad側の具体的なstateに合流した場合、RSTICK復活問題(Chapter15/78-101/113-114系)との共通原因調査に合流できる可能性がある。
+
+本節時点でGit commit/pushは行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+
+## 125. RSTICK DEAD/LIVE調査を再開 - `Root26LastInputIndexVtableTargetProbe`性能修正・実機確認・vtable先の中身がCONFIRMED（2026-09-09）
+
+ユーザー指示により、Chapter116〜124のcamera加速調査をいったん保留し、本来の本命問題であるRSTICK DEAD→LIVE復帰の調査へ復帰した。
+
+### 125.1 `Root26LastInputIndexVtableTargetProbe`の性能修正 - CONFIRMED
+
+Chapter115.9で指示済みの設計方針(module一覧は初回1回だけキャッシュ、vtable先アドレスが変化した時だけ再解決)通りに`src/Root26LastInputIndexVtableTargetProbe.cs`を修正した。`Process.Modules`列挙を`EnsureModuleSnapshot()`として1箇所に統合し、成功・失敗にかかわらずセッション中1回のみ実行するよう変更。`ModMain.cs`の該当行を再有効化し、clean build(0警告0エラー)・deploy・SHA-256一致確認(`10469ee0...`)を実施した。
+
+### 125.2 実機テスト結果 - 性能問題は解消、P4がCONFIRMED
+
+実機テスト(DEAD確認→RSTICK操作継続しながらGuide押下→LIVE化、これをOFF/ON数回)を実施。**Chapter115.7のような速度低下は発生せず**、HEARTBEATログが約5秒間隔で正常に出続けた(性能修正の効果をCONFIRMED)。
+
+`LastInputIndex`が-1→1→-1→1と複数回切り替わる間、`globalPtr`/`chainA`/`chainB`/`interfaceObj`/`vtableSlot0`は**一度も変化しなかった**(すべて同一アドレス)。
+
+```text
+vtableSlot0 = 0x7FF8A8E33C70
+target      = GameAssembly.dll+0x1633C70   (steamclient64.dllではない)
+```
+
+**CONFIRMED(Chapter115.5の判定枠組みに基づく)**:
+- **P1(steamclient64.dll直結): REJECTED。** targetはGameAssembly.dll自身の内部にある。
+- **P4(target識別子は一定、戻り値だけがDEAD/LIVEで変化): CONFIRMED。** 同一オブジェクト・同一関数を呼び続けており、内部state(データ側)が変化していると考えられる。
+
+### 125.3 vtable先関数(GameAssembly.dll+0x1633C70)の中身 - CONFIRMED(構造)
+
+read-only静的解析(Ghidra decompile)により、この関数は**汎用的な「Dictionary風バケット/エントリテーブルの検索＋一致したエントリのdelegate呼び出し」パターン**であることが判明した。
+
+```text
+param_1 = interfaceObj(buckets=+0x10, entries=+0x18, key的なフィールド=+0x30)
+param_2 = 呼び出し元(0x1519140)が渡すcontrollerObj相当
+param_3 = 呼び出し元のthis相当(lock/sync obj取得に使用)
+
+hash = func_0x180001fd0(1, syncObj, param_1+0x30, param_2)
+       (GetHashCode相当と推測、HYPOTHESIS)
+bucket = hash % entries.Length
+entries[bucket]チェーンを辿り、
+  entry.hash == hash かつ
+  func_0x1800024e0(0, syncObj, entry.delegate, entry.value, param_2)
+  がtrueを返せば、そのentryのindexを返す(成功)
+一致なし、またはdelegateがfalseを返せば0xFFFFFFFFを返す(失敗
+  = 呼び出し元でLastInputIndex=-1相当に解釈される)
+```
+
+**CONFIRMED(構造)**: この関数自体はSteam/Guide固有のロジックを一切含まない、汎用的なコレクション検索＋delegate起動のラッパーである(IL2CPPが生成する`Dictionary<TKey,TValue>`類の内部実装に酷似)。
+
+**HYPOTHESIS(意味)**: 実際の判定は「`interfaceObj`が持つテーブルに、渡された`controllerObj`に対応するエントリが存在するか」「存在する場合、そのエントリに紐づくdelegateがtrueを返すか」というdataに依存しており、これ以上はコードを読むだけでは分からない(delegateの中身・テーブルの実際の中身はruntime依存)。
+
+### 125.4 次段(未実装、提案のみ)
+
+`interfaceObj`(アドレスは固定、`+0x10`=buckets, `+0x18`=entries)の**エントリ数(Count相当のフィールド、要offset特定)**をDEAD/LIVE遷移の前後でread-onlyに観測し、「エントリ自体が追加/削除されている(再登録)」のか「既存エントリのままdelegateの答えだけが変わる」のかを切り分ける、最小probeを次段として提案する。着手前にユーザー合意を得る。
+
+本節時点でGit commit/pushは行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+
+## 126. `rcxGate`オフセット誤り(`+0x80`→`+0x50`)をmachine register traceでCONFIRMED・修正
+
+### 126.1 経緯
+
+125.4節の最小probe(Dictionary風テーブルのダンプ)を実機テストしたところ、`rcxGate`が常に`0x0`だった(過去の全テストでも同様だったことが判明)。これを受け、decompilerの変数名に頼らず、`0x1825F9E10`(`SteamInputUtil.UpdateInput()`)→`0x182602F30`→`0x181519140`→`call qword ptr [rax]`の実際のx64 machine instructionをGhidra生disassemblyで再追跡した。
+
+### 126.2 CONFIRMED: RCX/RDXは`0x181519140`内部で一切変更されない
+
+`0x181519140`の生disassembly:
+
+```text
+181519140: SUB RSP,0x28
+181519144: TEST RCX,RCX        ; nullチェックのみ、以降RCX/RDXは未使用
+181519147: JZ 0x18151916a
+181519149: MOV RAX,[R8+0x18]
+18151914d: MOV R8,[RAX+0xc0]
+181519154: MOV RAX,[R8+0x88]
+18151915b: MOV R8,RAX
+18151915e: CALL qword ptr [RAX]  ; ← 最終呼び出し。RCX/RDXは entry時のまま
+```
+
+**CONFIRMED**: 最終間接呼び出し時点で、`RCX`(param_1)・`RDX`(param_2)は関数entry時の値のまま一切変更されない。125.3節の「rcxGateがparam_1、controllerObjがparam_2」という対応関係自体は正しかった。
+
+### 126.3 CONFIRMED: `0x182602F30`のRCXは呼び出し元の`[RBP+0x10]`、そのRBPは`[RSI+0x50]`(`utilPtr+0x50`)由来
+
+`0x182602F30`のprologueでは`MOV RBP,RCX`(呼び出し時のRCXをRBPへ保存)、その後`MOV RCX,[RBP+0x10]`として`0x181519140`へ渡している。
+
+`0x182602F30`の全呼び出し元(1箇所、`UpdateInput()`内)を確認したところ:
+
+```text
+1825f9e1d: MOV RSI,RCX          ; UpdateInput()の"this"(=utilPtr)をRSIへ保存
+...
+1825f9fa0: MOV RCX,[RSI+0x50]   ; ← ★ここが+0x50、+0x80ではない★
+1825f9fb4: CALL 0x182602f30
+```
+
+すなわち、`0x182602F30`へ渡されるRCX(=`0x182602F30`内のRBP)は`*(utilPtr+0x50)`である。したがって最終的な`rcxGate`の正しい計算式は:
+
+```text
+rcxGate = *(*(utilPtr + 0x50) + 0x10)
+```
+
+**訂正**: Chapter114.8/115で記録していた`rcxGate = *(*(utilPtr + 0x80) + 0x10)`は**誤り**であり、`+0x80`は`+0x50`の誤記だったとCONFIRMEDする。これが実機テストで`rcxGate`が常に`0x0`だった直接の原因である(`+0x80`は偶然ゼロを含む別のfieldを指していた)。
+
+なお同じ関数内で、直前(`1825f9f30`)に**同一の`*(utilPtr+0x50)`オブジェクトに対して`0x181519140`への別の呼び出し**が1回多く存在する(`+0x30`のcontroller配列・`+0x10`のRCXを使用、controllerは`+0x30`配列から取得)ことも確認した。`0x182602F30`経由の呼び出しは同じRCX(`+0x10`)だが、controllerは`+0x20`配列から取得しており、2つの異なるcontroller配列(`+0x20`と`+0x30`)が同じloop indexで参照されている(意味はUNRESOLVED、深追いしない)。
+
+### 126.4 修正・ビルド・デプロイ
+
+`src/Root26LastInputIndexVtableTargetProbe.cs`の`SteamInputUtilField0x80Offset`(`0x80`)を`SteamInputUtilField0x50Offset`(`0x50`)へ修正。clean build(0警告0エラー)・deploy・SHA-256一致確認(`80d4c16d...`)を実施した。
+
+本節時点でGit commit/pushは行っていない。実機テスト待ち。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。
+
+
+## 127. 実機テスト結果: B確定 - Dictionary風テーブルはDEAD/LIVE遷移を跨いで完全に不変、delegate側の答えだけが変化する
+
+### 127.1 結果
+
+`rcxGate`オフセット修正後の実機テスト(DEAD確認→RSTICK操作しながらGuide→LIVE化、OFF/ON複数回)で、初めて意味のある値が取得できた。
+
+```text
+rcxGate=0x2B5F3D89600（全サンプルで不変）
+bucketsPtr=0x2B6875DD870 bucketsLen=3（不変）
+entriesPtr=0x2B5F73F5DC0 entriesLen=3（不変）
+delegateField=0x2B49A7DA800（不変）
+entries=[
+  0: h=866938468,  n=-1, v=0x45EB0033E98564
+  1: h=850159594,  n=0,  v=0x145E28E33E98564
+  2: h=0,          n=0,  v=0x0
+]（不変）
+```
+
+**CONFIRMED**: `lastInputIndex`が-1→1→-1→1と複数回切り替わる間、上記の値は**1バイトも変化しなかった**(bucketsPtr/entriesPtr/各エントリのhash/next/value/delegateFieldすべて完全一致)。
+
+### 127.2 判定: B(Dictionary内容は不変、delegateの答えだけが変わる)
+
+ユーザー提示のA/B基準に基づき、**B**を採用する:
+
+- **A(Guideでregistration内容が変わる): REJECTED。** テーブル自体(buckets/entries/各エントリのhash・next・value)は完全に不変。
+- **B(Dictionaryは同じで、既存entryのdelegateがDEAD/LIVEによって違う答えを返す): CONFIRMED。**
+
+すなわち、DEAD⇔LIVEの実体は「コントローラーの登録・削除」ではなく、**同一のentry・同一のdelegate呼び出しに対して、delegate自身(またはdelegateが読みに行く先の別の内部state)が異なる答えを返している**ことがruntimeで直接確認できた。
+
+### 127.3 `func_0x0001800024e0`は汎用IL2CPPインターフェースディスパッチ(delegate固有ロジックなし) - CONFIRMED
+
+`func_0x0001800024e0`をGhidraでdecompileした結果、これは**IL2CPPの汎用interface-method-invoke(キャッシュ付き仮想呼び出し)機構**であり、delegate/Guide/RSTICK固有のロジックを一切含まないことが判明した。
+
+```c
+void func_0x0001800024e0(int param_1, longlong param_2, longlong *param_3, arg4, arg5)
+{
+    klass = *param_3;                 // param_3 = delegateField自身
+    // klass+0xb0のinterface method cache(件数はklass+0x126)からparam_2に一致するslotを探す
+    // 未キャッシュならfunc_0x0001800a72c0で解決
+    (*(code*)実体の関数ポインタ)(param_3, param_4, param_5, extra);  // 間接呼び出し
+}
+```
+
+**CONFIRMED**: 実際に何が呼ばれるかは`param_3`(=`delegateField`)が指すオブジェクトの**実クラス(vtable)によって完全に決まる**、純粋にruntime依存の分岐である。これ以上コードを読んでも呼び出し先を静的に特定できない。次に必要なのは`delegateField`の実クラス特定である。
+
+### 127.4 `delegateField`のklassポインタを実機取得 - CONFIRMED(値のみ、クラス名は未特定)
+
+`src/Root26LastInputIndexVtableTargetProbe.cs`に、`delegateField`の先頭8byte(IL2CPPオブジェクトヘッダの標準規約であるklassポインタ)を1個だけ読む最小拡張を追加した(klass内部はダンプせず、`entry.value`もデリファレンスしない)。clean build・deploy・SHA-256一致確認(`f79ee549...`)を実施。
+
+実機テスト結果:
+
+```text
+delegateField=0x20B25B7A800（不変）
+delegateKlass=0x20CCE388BF0
+```
+
+**UNRESOLVED**: `delegateKlass`の生アドレスは取得できたが、このアドレスはGameAssembly.dllのPEイメージ範囲外(IL2CPPクラスメタデータは別途確保されるヒープ領域にあるため、既存の`ResolveModuleAndRva`ではモジュール名を特定できない)と考えられ、**このアドレスだけでは実クラス名はまだ特定できていない**。次段でklass内部の既知offset(name/namespace等、IL2CPPバージョンごとに要確認)を読むか、別の手段でクラス名を解決する必要がある。
+
+### 127.5 追加Evidence: マウスカーソル移動現象の再浮上 - 「Chapter115重量probe固有の副作用」説はREJECTED
+
+ユーザーより、Chapter115で報告された「Guide操作時にマウスカーソルが動いた」現象について、**Chapter115の重量probe(`Process.Modules`毎フレーム列挙)を除去・軽量化した後の、現在の正常速度セッションでも同様にマウスカーソル移動が再確認された**との報告があった。
+
+**REJECTED**: 「マウスカーソル移動はChapter115の重量probeによる異常な副作用に限定される」という従来の解釈。今回は負荷の軽いprobe構成下で再現しており、probe固有の副作用では説明できない。
+
+**再浮上(UNRESOLVED、有力候補)**: 以下3現象が同一のSteam Input側状態変化に由来する可能性を再度候補として扱う。
+- Guide操作 → RSTICK DEAD→LIVE(本章で調査中)
+- Guide押下中 → camera約3.4倍加速(Chapter116-124、保留中)
+- Guide操作時 → マウスカーソル移動(Chapter115.10で初報告、今回再確認)
+
+**訂正(ユーザー追加観測)**: 現時点のユーザー観測は「Guide一般で毎回カーソルが動く」でも「Guide+RSTICK操作で常に動く」でもなく、**「RSTICKがDEAD→LIVEへ切り替わる、まさにその瞬間に押したGuideでカーソルが動いている可能性が高い」**という、より限定的なものである。すなわち:
+
+- Guide単独での毎回の再現: 未確認
+- Guide+RSTICK操作での毎回の再現: 未確認
+- **RSTICK DEAD→LIVE遷移が発生するGuide操作時のカーソル移動: STRONG HYPOTHESIS**(相関の候補、因果関係はUNRESOLVED)
+
+マウス経路の追加調査(切り分け観察・probe追加)は今回実施せず、`delegateKlass`特定を優先する。
+
+本節時点でGit commit/pushは行っていない。
+
+F9/F10禁止・`ResetController`/`SteamControllerReStart`/`Shutdown`/
+`Init`/`UpdateConnectedControllers`/`ActivateActionSet`/
+`ActivateActionSetLayer`の手動呼び出し禁止・SendInput禁止・
+Guide入力偽装禁止・Steamバイナリへのpatch/injection/hook禁止を
+継続する。commit/push/stash/reset/revertは行っていない。

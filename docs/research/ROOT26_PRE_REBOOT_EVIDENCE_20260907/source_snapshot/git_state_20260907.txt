@@ -1,0 +1,31 @@
+=== git branch/HEAD ===
+agent/right-stick-vanilla-turn
+b2a2d4eac0db0dbd3b4867fef5ff02908d987081
+b2a2d4e feat: add broker-based external input launch and liveness guard
+
+=== git status --short ===
+ M docs/research/RIGHT_STICK_VIEW_AND_DASH_INVESTIGATION.md
+ M helper/Program.cs
+ M settings/Program.cs
+ M src/ModMain.cs
+ M src/ModernControllerApi.cs
+?? CLAUDE.md
+?? docs/research/ROOT26_PRE_REBOOT_EVIDENCE_20260907/
+?? settings/StartupShortcutManager.cs
+?? src/FocusCycleProbe.cs
+?? src/RightStickPollingProbe.cs
+?? tools/AxisTestBreakawayLaunch/
+?? tools/Root19PoC/
+?? tools/Root22Wrapper/
+?? tools/Run-AxisTestComparison.ps1
+?? tools/Run-InGameAxisTestComparison.ps1
+?? tools/Run-Root2Comparison.ps1
+?? tools/Run-Root2SingleVariableExperiment.ps1
+
+=== git diff --stat (tracked modifications) ===
+ .../RIGHT_STICK_VIEW_AND_DASH_INVESTIGATION.md     |  19 +-
+ helper/Program.cs                                  | 258 ++++++++++++++++++---
+ settings/Program.cs                                | 176 +++++++++++++-
+ src/ModMain.cs                                     |   5 +
+ src/ModernControllerApi.cs                         |  16 +-
+ 5 files changed, 429 insertions(+), 45 deletions(-)
