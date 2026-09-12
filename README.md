@@ -4,7 +4,7 @@
 
 『真・女神転生III NOCTURNE HD REMASTER』（Steam版）の入力と探索操作を現代的にする、Windows向けMelonLoader MODです。右スティックカメラ、ダッシュ、探索支援、Smart Auto Battleに加え、場面別キー割当と外部MOD連携に対応した統合設定GUIを提供します。
 
-現在の公開バージョンは **2.0.1** です。変更内容は[CHANGELOG](CHANGELOG.md)を参照してください。
+現在の公開バージョンは **2.0.2** です。変更内容は[CHANGELOG](CHANGELOG.md)を参照してください。
 
 ## 主な機能
 
@@ -145,10 +145,10 @@ dotnet build .\settings\NocturneModernController.Settings.csproj -c Release --no
 
 `SDL3.dll`はHelperプロジェクトが生成するファイルではありません。`tools/ControllerSideRead/Fetch-Sdl.ps1`は公式SDL 3.4.14 x64 archiveを固定SHA-256で検証して調査用`native/SDL3.dll`を取得します。配布時はライセンス条件を確認し、Helperフォルダーへ同梱してください。
 
-公開用ZIPは次のコマンドで生成できます。出力先は`artifacts/release/NocturneModernController-v2.0.1.zip`です。
+公開用ZIPは次のコマンドで生成できます。出力先は`artifacts/release/NocturneModernController-v2.0.2.zip`です。
 
 ```powershell
-.\tools\Build-Release.ps1 -Version 2.0.1
+.\tools\Build-Release.ps1 -Version 2.0.2
 ```
 
 ## 調査・開発記録

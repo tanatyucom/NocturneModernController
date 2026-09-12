@@ -87,6 +87,8 @@ namespace NocturneModernController
         public string Version { get; set; } = string.Empty;
         public string Warning { get; set; } = string.Empty;
         public string Notes { get; set; } = string.Empty;
+        public string[]? AllowedValues { get; set; }
+        public string? Value { get; set; }
     }
 
     public sealed class FeatureProviderMetadata
@@ -103,6 +105,7 @@ namespace NocturneModernController
         public string ProviderId { get; set; } = string.Empty;
         public string FeatureId { get; set; } = string.Empty;
         public bool Enabled { get; set; }
+        public string? Value { get; set; }
     }
 
     public interface IModernFeatureProvider
@@ -428,7 +431,9 @@ namespace NocturneModernController
             ReadOnly = feature.ReadOnly,
             Version = feature.Version,
             Warning = feature.Warning,
-            Notes = feature.Notes
+            Notes = feature.Notes,
+            AllowedValues = feature.AllowedValues,
+            Value = feature.Value
         };
 
         private static void EnsureBindingsLoaded()

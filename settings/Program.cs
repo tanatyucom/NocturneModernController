@@ -64,6 +64,8 @@ internal sealed class FeatureMetadata
     public string Version { get; set; } = string.Empty;
     public string Warning { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
+    public string[]? AllowedValues { get; set; }
+    public string? Value { get; set; }
 }
 
 internal sealed class FeatureProviderMetadata
@@ -80,6 +82,12 @@ internal sealed class FeatureToggleRequest
     public string ProviderId { get; set; } = string.Empty;
     public string FeatureId { get; set; } = string.Empty;
     public bool Enabled { get; set; }
+    public string? Value { get; set; }
+}
+
+internal sealed record FeatureValueOption(string RawValue, string Label)
+{
+    public override string ToString() => Label;
 }
 
 internal static class Program
@@ -109,6 +117,7 @@ internal sealed class SettingsForm : Form
     private readonly List<BindingEntry> _bindings;
     private readonly List<FeatureProviderMetadata> _featureProviders;
     private readonly Dictionary<CheckBox, (string ProviderId, string FeatureId, bool Initial)> _featureToggles = new();
+    private readonly Dictionary<ComboBox, (string ProviderId, string FeatureId, string Initial)> _featureValueSelectors = new();
     private readonly ComboBox _mode = NewCombo();
     private readonly ComboBox _horizontalAxis = NewCombo();
     private readonly ComboBox _verticalAxis = NewCombo();
@@ -336,24 +345,68 @@ internal sealed class SettingsForm : Form
     {
         int descriptionHeight = string.IsNullOrWhiteSpace(feature.Description) ? 0 : 42;
         int extraHeight = string.IsNullOrWhiteSpace(feature.Warning) ? 0 : 28;
+        bool hasSelector = feature.AllowedValues != null && feature.AllowedValues.Length > 0;
+
+        int contentBottom = 61; // bottom of the category label (Location(62,39) Size(_,22))
+        if (descriptionHeight > 0)
+        {
+            contentBottom = 64 + descriptionHeight;
+        }
+        if (extraHeight > 0)
+        {
+            contentBottom = 66 + descriptionHeight + extraHeight;
+        }
+        int selectorY = contentBottom + 8;
+
         var card = new Panel
         {
             Width = 840,
-            Height = 78 + descriptionHeight + extraHeight,
+            Height = hasSelector ? selectorY + 23 + 14 : 78 + descriptionHeight + extraHeight,
             BackColor = Color.FromArgb(31, 39, 51),
             Margin = new Padding(4, 5, 4, 5),
             Padding = new Padding(14)
         };
-        var toggle = new CheckBox
+        if (feature.AllowedValues != null && feature.AllowedValues.Length > 0)
         {
-            Checked = feature.Enabled,
-            Enabled = !feature.ReadOnly,
-            AutoSize = true,
-            Location = new Point(16, 19),
-            ForeColor = Color.WhiteSmoke
-        };
-        _featureToggles[toggle] = (provider.ProviderId, feature.Id, feature.Enabled);
-        card.Controls.Add(toggle);
+            var selector = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Enabled = !feature.ReadOnly,
+                Location = new Point(62, selectorY),
+                Width = 130
+            };
+            selector.MouseWheel += (_, e) =>
+            {
+                if (e is HandledMouseEventArgs handledArgs)
+                {
+                    handledArgs.Handled = true;
+                }
+            };
+            foreach (string rawValue in feature.AllowedValues)
+            {
+                selector.Items.Add(new FeatureValueOption(rawValue, ChanceValueLabel(rawValue, _japanese)));
+            }
+            string initialValue = !string.IsNullOrEmpty(feature.Value) && feature.AllowedValues.Contains(feature.Value)
+                ? feature.Value
+                : feature.AllowedValues[0];
+            selector.SelectedIndex = Array.IndexOf(feature.AllowedValues, initialValue);
+            _featureValueSelectors[selector] = (provider.ProviderId, feature.Id, initialValue);
+            card.Controls.Add(selector);
+            selector.BringToFront();
+        }
+        else
+        {
+            var toggle = new CheckBox
+            {
+                Checked = feature.Enabled,
+                Enabled = !feature.ReadOnly,
+                AutoSize = true,
+                Location = new Point(16, 19),
+                ForeColor = Color.WhiteSmoke
+            };
+            _featureToggles[toggle] = (provider.ProviderId, feature.Id, feature.Enabled);
+            card.Controls.Add(toggle);
+        }
         card.Controls.Add(new Label
         {
             Text = GetFeatureName(provider, feature),
@@ -541,6 +594,15 @@ internal sealed class SettingsForm : Form
                 FeatureId = pair.Value.FeatureId,
                 Enabled = pair.Key.Checked
             })
+            .Concat(_featureValueSelectors
+                .Where(pair => pair.Key.SelectedItem is FeatureValueOption selected &&
+                               selected.RawValue != pair.Value.Initial)
+                .Select(pair => new FeatureToggleRequest
+                {
+                    ProviderId = pair.Value.ProviderId,
+                    FeatureId = pair.Value.FeatureId,
+                    Value = ((FeatureValueOption)pair.Key.SelectedItem!).RawValue
+                }))
             .ToList();
         File.WriteAllText(_featureRequestsPath, JsonSerializer.Serialize(requests, options));
         Close();
@@ -570,6 +632,15 @@ internal sealed class SettingsForm : Form
         }
         return _actions.FirstOrDefault(action => action.ActionId == actionId)?.DisplayName ?? actionId;
     }
+
+    private static string ChanceValueLabel(string rawValue, bool japanese) => rawValue switch
+    {
+        "Disabled" => "0%",
+        "Native" => japanese ? "通常" : "Native",
+        "Always" => "100%",
+        _ => rawValue
+    };
+
 
     private string GetFeatureName(FeatureProviderMetadata provider, FeatureMetadata feature) => feature.Name;
 

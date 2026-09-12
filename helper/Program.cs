@@ -11,9 +11,6 @@ internal static class Program
     private const int Magic = 0x4E4D4332;
     private const int StopRequested = 0x53544F50;
     private const uint InitGamepad = 0x00002000;
-    private const uint MouseEventMove = 0x0001;
-    private const int VerticalEngageThreshold = 10000;
-    private const bool SyntheticVerticalMouseEnabled = false;
     private static readonly string LogPath = Path.Combine(
         Path.GetTempPath(),
         "NocturneModernController.InputHelper.log");
@@ -40,7 +37,6 @@ internal static class Program
         view.Write(24, 0);
         view.Write(28, 0);
         view.Write(32, 0);
-        int lastMouseTick = 0;
         bool cursorHidden = false;
         int trackedGamePid = 0;
 
@@ -77,19 +73,6 @@ internal static class Program
                     gamePid > 0 &&
                     IsForegroundProcess(gamePid);
                 SetCursorHidden(cameraContextActive, ref cursorHidden);
-                if (SyntheticVerticalMouseEnabled && cameraContextActive &&
-                    Math.Abs((int)y) >= VerticalEngageThreshold &&
-                    unchecked(Environment.TickCount - lastMouseTick) >= 4)
-                {
-                    lastMouseTick = Environment.TickCount;
-                    int deltaY = y < 0 ? -4 : 4;
-                    NativeMethods.mouse_event(
-                        MouseEventMove,
-                        0,
-                        unchecked((uint)deltaY),
-                        0,
-                        UIntPtr.Zero);
-                }
 
                 view.Write(4, gamepad == IntPtr.Zero ? 0 : 1);
                 view.Write(8, (int)x);
@@ -286,13 +269,6 @@ internal static class Program
             IntPtr window,
             out uint processId);
 
-        [DllImport("user32.dll")]
-        internal static extern void mouse_event(
-            uint flags,
-            uint dx,
-            uint dy,
-            uint data,
-            UIntPtr extraInfo);
 
         [DllImport("user32.dll")]
         internal static extern int ShowCursor([MarshalAs(UnmanagedType.Bool)] bool show);

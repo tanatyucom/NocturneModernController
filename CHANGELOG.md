@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.0.2 - 2026-09-12
+
+- Added support for multi-value external feature settings.
+- Added Chance selection support for compatible external gameplay features.
+- Added 0% / Native / 100% Chance selector display (0% / 通常 / 100% in Japanese).
+- Fixed an issue where the Chance selector could be hidden underneath its feature title.
+- Prevented the mouse wheel from unintentionally changing dropdown values while scrolling the Settings window.
+- Removed unused legacy synthetic mouse movement code.
+- Aligned MOD and assembly version metadata with the release version.
+
+Right-stick startup architecture is unchanged from v2.0.1: Explorer-based automatic helper startup, no additional setup, and no Guide button press required.
+
 ## 2.0.1 - 2026-08-23
 
 - Added automatic Japanese/English settings UI selection based on the Windows UI language.

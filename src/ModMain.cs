@@ -3,7 +3,7 @@ using MelonLoader;
 [assembly: MelonInfo(
     typeof(NocturneModernController.ModMain),
     "Nocturne Modern Controller",
-    "1.0.0",
+    "2.0.2",
     "Gray Ghost")]
 [assembly: MelonGame(null, "smt3hd")]
 

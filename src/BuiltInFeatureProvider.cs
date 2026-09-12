@@ -9,7 +9,7 @@ namespace NocturneModernController
 
         public string ProviderId => "nocturne_modern_controller";
         public string ProviderName => "Nocturne Modern Controller";
-        public string Version => "2.0.1";
+        public string Version => "2.0.2";
 
         public IReadOnlyList<FeatureMetadata> GetFeatures()
         {
@@ -64,7 +64,7 @@ namespace NocturneModernController
             Category = category,
             Enabled = enabled,
             SortOrder = sortOrder,
-            Version = "2.0.1"
+            Version = "2.0.2"
         };
     }
 }
