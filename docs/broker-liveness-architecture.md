@@ -102,3 +102,12 @@ MODの他機能には一切影響しない(`ExternalInputBridge.Start()`はfire-
 - Option B(Startup Broker)の一般ユーザー向け導線(Installer自動登録等)は**採用しない方針**
   (2026-09-06、ユーザー決定)。production導線は「標準: 専用Launcher」「任意: README記載の手動Startup Folder
   配置」の二本立てとする。Installer・自動Startup登録・設定UI・常駐管理機能への拡張は本方針の対象外。
+
+## 7. 補足(2026-09-12)
+
+本文書は2026-09-06時点のアーキテクチャ状態を記録したものであり、上記の記述(手動Startup Folder配置を
+「任意」の導線とする方針を含む)は歴史的記録としてそのまま保持する。
+
+現在(2026-09-12)は、`agent/right-stick-vanilla-turn`ブランチ上で未リリースの代替アーキテクチャ
+(Windows Task Schedulerを用いたBroker自動起動)を開発中である。詳細は
+[`TASK_SCHEDULER_ALTERNATIVE.md`](TASK_SCHEDULER_ALTERNATIVE.md)を参照。
