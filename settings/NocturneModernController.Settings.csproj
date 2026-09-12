@@ -8,4 +8,12 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <Optimize>true</Optimize>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Root-26 Phase P3: BrokerTaskService.cs is the single canonical
+         implementation (also linked into NocturneModernController.csproj
+         and used by tools/TaskSchedulerBroker's P1 acceptance-test
+         harness); it is linked in here rather than duplicated. -->
+    <Compile Include="..\tools\TaskSchedulerBroker\BrokerTaskService.cs" />
+  </ItemGroup>
 </Project>

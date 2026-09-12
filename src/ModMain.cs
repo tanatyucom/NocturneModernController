@@ -87,6 +87,7 @@ namespace NocturneModernController
         public override void OnUpdate()
         {
             SettingsGuiController.Sample();
+            ExternalInputBridge.Tick();
             SdlRightStickInput.Sample();
             if (ControllerSettings.Current.SmartAutoEnabled)
             {

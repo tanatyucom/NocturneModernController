@@ -37,6 +37,12 @@
     <Compile Remove="src\CameraVectorProbe.cs" />
     <Compile Remove="src\AnalogChannelTelemetry.cs" />
 
+    <!-- Root-26 Phase P2: BrokerTaskService.cs is the single canonical
+         implementation (also used by tools/TaskSchedulerBroker's P1
+         acceptance-test harness); it is linked in here rather than
+         duplicated. It has no dependency on that project's Program.cs. -->
+    <Compile Include="tools\TaskSchedulerBroker\BrokerTaskService.cs" />
+
     <Reference Include="MelonLoader">
       <HintPath>$(GameDir)\MelonLoader\net6\MelonLoader.dll</HintPath>
       <Private>false</Private>

@@ -9,6 +9,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows.Forms;
+using NocturneModernController.TaskSchedulerBroker;
 
 internal enum RightStickMode { FullCamera, HorizontalTurn }
 internal enum AutoBattleMode { NormalAttackOnly, SkillPriority }
@@ -141,8 +142,10 @@ internal sealed class SettingsForm : Form
     private readonly Dictionary<ControllerButton, Button> _padButtons = new();
     private readonly ToolTip _bindingTips = new ToolTip();
     private readonly ComboBox _uiLanguage = NewCombo();
-    private readonly CheckBox _startupBrokerEnabled = new CheckBox();
-    private bool _startupBrokerInitiallyChecked;
+    private readonly CheckBox _taskSchedulerHelperEnabled = new CheckBox();
+    private bool _taskSchedulerHelperInitiallyChecked;
+    private bool _taskSchedulerForeignConflict;
+    private bool _taskSchedulerOwnedInvalid;
     private readonly bool _japanese;
 
     internal SettingsForm(string settingsPath, string registryPath, string bindingsPath, string featuresPath, string featureRequestsPath, int gamePid)
@@ -290,34 +293,9 @@ internal sealed class SettingsForm : Form
     private TabPage BuildLaunchPage()
     {
         var page = NewPage(L("起動", "Launch"));
-        string? brokerPath = StartupShortcutManager.ResolveBrokerPath();
+        string? brokerPath = ResolveBrokerPath();
 
-        _startupBrokerEnabled.Text = L(
-            "Windowsサインイン時にBrokerを自動起動する(Steam通常プレイで右スティックを使う場合に必要)",
-            "Start the broker automatically at Windows sign-in (needed for the right stick with Steam's own Play button)");
-        _startupBrokerEnabled.AutoSize = true;
-        _startupBrokerEnabled.ForeColor = Color.WhiteSmoke;
-        _startupBrokerEnabled.Location = new Point(30, 30);
-        _startupBrokerEnabled.Enabled = brokerPath != null;
-        _startupBrokerEnabled.Checked = brokerPath != null && StartupShortcutManager.IsRegistered(brokerPath);
-        _startupBrokerInitiallyChecked = _startupBrokerEnabled.Checked;
-        page.Controls.Add(_startupBrokerEnabled);
-
-        page.Controls.Add(new Label
-        {
-            Text = L(
-                "ONにすると、次回以降のWindowsサインイン時にBrokerが自動的に独立起動し、専用Launcherを使わずSteam通常「プレイ」でも" +
-                "右スティックが使えるようになります。\n" +
-                "反映にはWindowsの再起動、またはサインアウト→サインインが必要です。\n" +
-                "OFFにすると、このMODが作成したStartupショートカットのみを削除します(現在動作中のBrokerは停止しません)。",
-                "When enabled, the broker starts automatically at your next Windows sign-in, so the right stick works even with " +
-                "Steam's own Play button - no dedicated Launcher needed.\n" +
-                "Restart Windows, or sign out and back in, for this to take effect.\n" +
-                "Disabling this only removes the Startup shortcut this MOD created; it does not stop a broker that is already running."),
-            Location = new Point(30, 66),
-            Size = new Size(840, 110),
-            ForeColor = Color.Gainsboro
-        });
+        BuildTaskSchedulerHelperSection(page, brokerPath);
 
         if (brokerPath == null)
         {
@@ -325,7 +303,7 @@ internal sealed class SettingsForm : Form
             {
                 Text = L("Broker.exeが見つからないため、この機能は利用できません。",
                          "Broker.exe was not found, so this feature is unavailable."),
-                Location = new Point(30, 186),
+                Location = new Point(30, 350),
                 AutoSize = true,
                 ForeColor = Color.FromArgb(225, 164, 82)
             });
@@ -334,44 +312,175 @@ internal sealed class SettingsForm : Form
         return page;
     }
 
-    private void ApplyStartupBrokerChange()
+    // Broker.exe is deployed alongside this Settings.exe (both under
+    // .../Mods/NocturneModernController.Helper/). Kept local to this class
+    // now that StartupShortcutManager (which used to own this resolver) has
+    // been removed along with the Startup-folder route.
+    private static string? ResolveBrokerPath()
     {
-        if (_startupBrokerEnabled.Checked == _startupBrokerInitiallyChecked)
+        string candidate = Path.Combine(AppContext.BaseDirectory, "NocturneModernController.Broker.exe");
+        return File.Exists(candidate) ? candidate : null;
+    }
+
+    // Root-26 Phase P3/P4: the on-demand Task Scheduler route is the sole
+    // production way to start the broker automatically (the Windows
+    // Startup-folder route was removed - Task Scheduler superseded it
+    // before any release shipped it). No boolean is persisted in settings
+    // JSON for this feature, by design - the registered task's own
+    // existence + ownership + settings are the only source of truth, read
+    // back fresh every time this page is built.
+    private void BuildTaskSchedulerHelperSection(TabPage page, string? brokerPath)
+    {
+        BrokerTaskValidation? validation = null;
+        Exception? checkError = null;
+        if (brokerPath != null)
+        {
+            try
+            {
+                validation = new BrokerTaskService().Validate(brokerPath);
+            }
+            catch (Exception ex)
+            {
+                checkError = ex;
+            }
+        }
+
+        _taskSchedulerHelperEnabled.Text = L(
+            "右スティックの自動サポートを有効にする(専用Launcherを使わず、Steamの通常「プレイ」で動作します)",
+            "Enable automatic right-stick support (works with Steam's own Play button, no dedicated Launcher needed)");
+        _taskSchedulerHelperEnabled.AutoSize = true;
+        _taskSchedulerHelperEnabled.ForeColor = Color.WhiteSmoke;
+        _taskSchedulerHelperEnabled.Location = new Point(30, 30);
+        _taskSchedulerHelperEnabled.Enabled = brokerPath != null && checkError == null;
+        _taskSchedulerHelperEnabled.Checked = validation?.IsFullyValid == true;
+        _taskSchedulerHelperInitiallyChecked = _taskSchedulerHelperEnabled.Checked;
+        _taskSchedulerForeignConflict = validation != null && validation.Exists && !validation.IsOurs;
+        _taskSchedulerOwnedInvalid = validation != null && validation.Exists && validation.IsOurs && !validation.SettingsValid;
+        page.Controls.Add(_taskSchedulerHelperEnabled);
+
+        page.Controls.Add(new Label
+        {
+            Text = L(
+                "ONにすると、次回以降Steamから通常通りSMT3HDを起動するだけで右スティックが自動的に使えるようになります。" +
+                "専用Launcherも、Windowsサインイン時の設定も不要です。\n" +
+                "OFFにしても、現在動作中のものを停止することはありません。このMODが登録した項目を削除するだけです。\n" +
+                "うまく動作しない場合は、代わりにNocturneModernController.Launcher.exeから起動してください。",
+                "When enabled, the right stick works automatically the next time you start SMT3HD normally from Steam - " +
+                "no dedicated Launcher and no Windows sign-in setting needed.\n" +
+                "Disabling this does not stop anything currently running; it only removes what this MOD registered.\n" +
+                "If this doesn't work for you, start the game via NocturneModernController.Launcher.exe instead."),
+            Location = new Point(30, 66),
+            Size = new Size(840, 110),
+            ForeColor = Color.Gainsboro
+        });
+
+        string? statusText = null;
+        if (brokerPath != null && checkError != null)
+        {
+            statusText = L(
+                "現在の状態を確認できませんでした: ",
+                "Could not check the current state: ") + checkError.Message;
+        }
+        else if (_taskSchedulerForeignConflict)
+        {
+            statusText = L(
+                "同名の項目が他で作成されているため、この機能は利用できません。手動でご確認ください。",
+                "An existing item with the same name was not created by this MOD, so this feature is unavailable until it's resolved manually.");
+        }
+        else if (_taskSchedulerOwnedInvalid)
+        {
+            statusText = L(
+                "このMODが登録した項目ですが、設定が想定と異なります。チェックを入れ直すと修復されます。",
+                "This MOD's own registered item has unexpected settings. Re-checking the box will repair it.");
+        }
+
+        if (statusText != null)
+        {
+            page.Controls.Add(new Label
+            {
+                Text = statusText,
+                Location = new Point(30, 186),
+                Size = new Size(840, 40),
+                ForeColor = Color.FromArgb(225, 164, 82)
+            });
+        }
+    }
+
+    private void ApplyTaskSchedulerHelperChange()
+    {
+        if (_taskSchedulerHelperEnabled.Checked == _taskSchedulerHelperInitiallyChecked)
         {
             return;
         }
 
-        string? brokerPath = StartupShortcutManager.ResolveBrokerPath();
+        string? brokerPath = ResolveBrokerPath();
         if (brokerPath == null)
         {
             return;
         }
 
-        if (_startupBrokerEnabled.Checked)
+        var service = new BrokerTaskService();
+        if (_taskSchedulerHelperEnabled.Checked)
         {
-            if (StartupShortcutManager.TryCreate(brokerPath, out string? error))
+            try
             {
+                BrokerRegistrationOutcome outcome = service.Register(brokerPath);
+                if (outcome == BrokerRegistrationOutcome.ForeignConflict)
+                {
+                    MessageBox.Show(
+                        L("有効化できませんでした。同名の項目が他で作成されているため、上書きしませんでした。手動でご確認ください。",
+                          "Could not enable this: an existing item with the same name was not created by this MOD, so it was left untouched. Please check it manually."),
+                        L("起動", "Launch"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                BrokerTaskValidation confirmed = service.Validate(brokerPath);
+                if (!confirmed.IsFullyValid)
+                {
+                    MessageBox.Show(
+                        L("登録内容を確認できなかったため、有効化しませんでした。",
+                          "Registration could not be confirmed, so this was not enabled."),
+                        L("起動", "Launch"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
                 MessageBox.Show(
-                    L("Startup登録を作成しました。反映にはWindowsの再起動、またはサインアウト→サインインが必要です。",
-                      "Startup entry created. Restart Windows, or sign out and back in, for this to take effect."),
+                    L("右スティックの自動サポートを有効にしました。次回以降、Steamから通常通り起動するだけで動作します。",
+                      "Automatic right-stick support is now enabled. It will work the next time you start the game normally from Steam."),
                     L("起動", "Launch"), MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
-            else
+            catch (Exception ex)
             {
                 MessageBox.Show(
-                    L("Startup Folderへの書き込みに失敗しました: ", "Failed to write to the Startup folder: ") + error,
+                    L("有効化に失敗しました: ", "Failed to enable this: ") + ex.Message,
                     L("起動", "Launch"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
         else
         {
-            if (!StartupShortcutManager.TryRemoveOwned(brokerPath, out bool ownershipMismatch, out string? error))
+            try
+            {
+                BrokerUnregisterOutcome outcome = service.Unregister(brokerPath);
+                if (outcome == BrokerUnregisterOutcome.RefusedForeignTask)
+                {
+                    MessageBox.Show(
+                        L("同名の項目が他で作成されているため、削除しませんでした。",
+                          "Not removed: an existing item with the same name was not created by this MOD."),
+                        L("起動", "Launch"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                else if (outcome == BrokerUnregisterOutcome.Failed)
+                {
+                    MessageBox.Show(
+                        L("削除に失敗しました。", "Failed to remove this."),
+                        L("起動", "Launch"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                // Deleted / AlreadyAbsent: silent success, matching the
+                // existing Startup checkbox's silent OFF-path above.
+            }
+            catch (Exception ex)
             {
                 MessageBox.Show(
-                    ownershipMismatch
-                        ? L("Startup Folder内の同名ショートカットの内容が想定と異なるため、削除を中止しました。エクスプローラーで手動確認してください。",
-                            "The existing shortcut's contents didn't match what this MOD created, so it was not removed. Please check it manually in File Explorer.")
-                        : L("Startupショートカットの削除に失敗しました: ", "Failed to remove the Startup shortcut: ") + error,
+                    L("無効化に失敗しました: ", "Failed to disable this: ") + ex.Message,
                     L("起動", "Launch"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
@@ -687,7 +796,7 @@ internal sealed class SettingsForm : Form
                 }))
             .ToList();
         File.WriteAllText(_featureRequestsPath, JsonSerializer.Serialize(requests, options));
-        ApplyStartupBrokerChange();
+        ApplyTaskSchedulerHelperChange();
         Close();
     }
 
