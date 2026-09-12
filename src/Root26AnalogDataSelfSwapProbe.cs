@@ -100,9 +100,9 @@ namespace NocturneModernController
         // GetAnalogActionData wrapper in steamclient64.dll, read-only)
         // that the "effective R8" value passed to the inner
         // implementation is computed as:
-        //   globalA (uint32 @ RVA 0x17E4160) masked to its low 24 bits,
-        //   UNLESS the byte at RVA 0x17E4163 equals 2, in which case
-        //   globalC (uint32 @ RVA 0x17E4164) is used instead (unmasked -
+        //   globalA (uint32) masked to its low 24 bits,
+        //   UNLESS the selector byte equals 2, in which case
+        //   globalC (uint32) is used instead (unmasked -
         //   the machine code's "cmove r8d, [globalC]" replaces the
         //   already-masked value with the raw 4-byte globalC value, so
         //   this probe reproduces that literally, not a simplified
@@ -113,9 +113,29 @@ namespace NocturneModernController
         // globalA belong to an unrelated subsystem (E2) - this probe does
         // NOT assume any semantic meaning for these values, it only
         // reproduces the machine-code-confirmed read/compare literally.
-        private const long SteamclientGlobalARva = 0x17E4160L;
-        private const long SteamclientGlobalSelectorRva = 0x17E4163L;
-        private const long SteamclientGlobalCRva = 0x17E4164L;
+        //
+        // RVA CORRECTION (Root-26 "current DLL" re-verification session,
+        // steamclient64.dll SHA-256
+        // ea23997e2b376df52bf9bbd3f6d2ba628c3b669b45381c03948fe209a7a0e36f,
+        // FileVersion 10.98.06.80, compiled 2026-09-09): the Chapter95
+        // RVAs above (0x17E4160/0x17E4163/0x17E4164) were derived from a
+        // steamclient64.dll build that predates a Steam client update
+        // (confirmed this session - the field116780 ctor zero-init write
+        // site alone moved by ~0x12E80 bytes between builds). Those old
+        // RVAs are STALE on the current DLL: fresh disassembly this
+        // session found the exact same "and edx,0xffffff" /
+        // "cmove edx,[globalC]" instruction pattern at 152 independent
+        // call sites throughout .text, ALL of which point to the SAME
+        // triple of addresses below (cross-validated, not a single-site
+        // guess). The stale RVAs read unrelated/incorrect current data,
+        // which is why a prior session's effectiveR8 reading stayed
+        // constant across an entire DEAD->LIVE transition even though it
+        // never once matched inner+0x109708 (including during confirmed
+        // gate-pass frames) - a strong tell that it was reading the wrong
+        // address rather than a genuinely-invariant value.
+        private const long SteamclientGlobalARva = 0x10106D0L;
+        private const long SteamclientGlobalSelectorRva = 0x10106D3L;
+        private const long SteamclientGlobalCRva = 0x10106D4L;
         private const int InnerStoredFieldOffset = 0x109708; // Chapter 90.3: CONFIRMED via capstone.
         private const int InnerObjectOffset = 0x8; // Chapter 87/88: CONFIRMED outer->inner delegation offset.
 

@@ -86,6 +86,40 @@ namespace NocturneModernController
         private const int Field190Offset = 0x190;
         private const int Field116780Offset = 0x116780;
 
+        // Root-26 "current DLL" re-verification session (steamclient64.dll
+        // SHA-256 ea23997e2b376df52bf9bbd3f6d2ba628c3b669b45381c03948fe209a7a0e36f,
+        // FileVersion 10.98.06.80): fresh disassembly of the CURRENT
+        // GetAnalogActionData implementation (found via vtable fingerprint,
+        // not a stale RVA) re-confirmed the exact same field-offset layout
+        // this probe already used (entry base/stride/controller table all
+        // unchanged across the Steam update). Two NEW fields were found in
+        // that pass, unconditionally touched by every single
+        // GetAnalogActionData call:
+        //   self+0x11677c (int32) is read and copied into self+0x11678c
+        //     every call ("mov eax,[self+0x11677c]; mov [self+0x11678c],eax").
+        //   self+0x1167a0 is the base of a 16-slot*24-action (384 byte)
+        //     per-(controllerSlot,analogAction) BYTE flag array, indexed as
+        //     self+0x1167a0+(controllerSlotIndex*24+actionIndex) - written
+        //     to 1 by GetAnalogActionData itself every call (a downstream
+        //     "have I cached a previous value for this combo" bookkeeping
+        //     flag, not the real entry). The OLD rawDump below already
+        //     covers +0x11677c/+0x116780/+0x11678c as fixed-offset reads
+        //     (labeled raw11677C/raw116780/raw11678C), but its
+        //     raw1167A0 entry is a FIXED read of slot=0/action=0's flag -
+        //     not necessarily this entry's own flag. EntryFlagOffset below
+        //     reads the CORRECT per-entry flag byte using the same
+        //     controllerSlotIndex/actionIndex this probe already computes
+        //     for entry/cacheCandidate.
+        private const int Field11677cOffset = 0x11677c;
+        private const int Field11678cOffset = 0x11678c;
+        private const int EntryFlagTableBase = 0x1167a0;
+        private const int EntryFlagStride = 24;
+
+        // Chapter 90/95/101/100 CONFIRMED "effectiveR8" gate field,
+        // re-verified this session on the current DLL
+        // ("cmp r14d, dword ptr [self+0x109708]; jne early-exit").
+        private const int EffectiveR8GateOffset = 0x109708;
+
         // Chapter 107: raw, layout-neutral dump of the neighborhood around
         // +0x116780 (106章でCONFIRMED済みの唯一のdirect write site,
         // an object-construction-time zero-clear, does not explain the
@@ -215,18 +249,22 @@ namespace NocturneModernController
                 return;
             }
 
-            long entryOffset = (controllerSlotIndex * (long)ControllerSlotMultiplier + (long)(analogActionHandleRaw - 1)) * EntryStride;
+            int actionIndex = checked((int)(analogActionHandleRaw - 1));
+            long entryOffset = (controllerSlotIndex * (long)ControllerSlotMultiplier + actionIndex) * EntryStride;
+            int entryFlagIndex = controllerSlotIndex * EntryFlagStride + actionIndex;
 
             IntPtr entryBase;
             IntPtr cacheBase;
+            IntPtr entryFlagAddress;
             try
             {
                 entryBase = IntPtr.Add(managedInner, checked((int)(EntryTableBase + entryOffset)));
                 cacheBase = IntPtr.Add(managedInner, checked((int)(CacheTableBase + entryOffset)));
+                entryFlagAddress = IntPtr.Add(managedInner, checked(EntryFlagTableBase + entryFlagIndex));
             }
             catch (Exception ex)
             {
-                LogErrorOnce("computing entry/cache addresses threw " + Describe(ex));
+                LogErrorOnce("computing entry/cache/flag addresses threw " + Describe(ex));
                 return;
             }
 
@@ -235,6 +273,10 @@ namespace NocturneModernController
             byte bActive, cacheBActive;
             IntPtr field190;
             int field116780;
+            int field11677c;
+            int field11678c;
+            byte entryFlag;
+            int effectiveR8Gate;
             try
             {
                 eMode = Marshal.ReadInt32(entryBase);
@@ -249,6 +291,10 @@ namespace NocturneModernController
 
                 field190 = Marshal.ReadIntPtr(IntPtr.Add(managedInner, Field190Offset));
                 field116780 = Marshal.ReadInt32(IntPtr.Add(managedInner, Field116780Offset));
+                field11677c = Marshal.ReadInt32(IntPtr.Add(managedInner, Field11677cOffset));
+                field11678c = Marshal.ReadInt32(IntPtr.Add(managedInner, Field11678cOffset));
+                entryFlag = Marshal.ReadByte(entryFlagAddress);
+                effectiveR8Gate = Marshal.ReadInt32(IntPtr.Add(managedInner, EffectiveR8GateOffset));
             }
             catch (Exception ex)
             {
@@ -273,6 +319,8 @@ namespace NocturneModernController
                 $"entry(eMode={eMode} x={x} y={y} bActive={bActive}) " +
                 $"cacheCandidate(eMode={cacheEMode} x={cacheX} y={cacheY} bActive={cacheBActive}) " +
                 $"field190=0x{field190.ToInt64():X} field116780=0x{field116780:X8} " +
+                $"field11677c=0x{field11677c:X8} field11678c=0x{field11678c:X8} " +
+                $"entryFlag1167a0[{entryFlagIndex}]={entryFlag} effectiveR8Gate109708=0x{effectiveR8Gate:X8} " +
                 $"rawDump({rawDumpSummary})";
 
             if (!PerHandle.TryGetValue(handleRaw, out PerHandleState? state))

@@ -27,6 +27,9 @@ namespace NocturneModernController
             HarmonyInstance.CreateClassProcessor(typeof(Root26ResetControllerCallProbe)).Patch();
             HarmonyInstance.CreateClassProcessor(typeof(Root26SteamControllerReStartCallProbe)).Patch();
             HarmonyInstance.CreateClassProcessor(typeof(Root26Phase1UpdateInputCallProbe)).Patch();
+            HarmonyInstance.CreateClassProcessor(typeof(Root26SteamInputRunFramePoc)).Patch();
+            HarmonyInstance.CreateClassProcessor(typeof(Root26NewInterfacePoc)).Patch();
+            HarmonyInstance.CreateClassProcessor(typeof(Root26Phase4Slot21AbCompareProbe)).Patch();
             HarmonyInstance.CreateClassProcessor(typeof(Root26Phase1SteamPadSetCallProbe)).Patch();
             HarmonyInstance.CreateClassProcessor(typeof(Root26Phase1SetAnalogProbe)).Patch();
             HarmonyInstance.CreateClassProcessor(typeof(Root26Phase3UpdateConnectedControllersCallProbe)).Patch();

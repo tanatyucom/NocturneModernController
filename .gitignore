@@ -12,4 +12,6 @@ helper/obj/
 controller-*.jsonl
 tools/ControllerSideRead/native/SDL3.dll
 tools/ControllerSideRead/native/SDL3-*.zip
+*.mp4
+tools/Root19PoC/
 

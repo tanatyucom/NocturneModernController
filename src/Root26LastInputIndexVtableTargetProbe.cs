@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Il2Cpp;
+using Il2CppInterop.Runtime;
 using MelonLoader;
 
 namespace NocturneModernController
@@ -133,6 +134,22 @@ namespace NocturneModernController
         private static bool _haveLastTarget;
         private static IntPtr _lastTarget = IntPtr.Zero;
         private static string _lastTargetModule = "NULL";
+
+        // Chapter 127.6: delegateKlass identity resolution via
+        // Il2CppInterop.Runtime.IL2CPP's existing thin wrappers around
+        // GameAssembly.dll's il2cpp_class_get_name/il2cpp_class_get_namespace
+        // exports (same API family already used read-only elsewhere in this
+        // codebase, e.g. Root26AnalogDataFieldOffsetProbe's
+        // il2cpp_class_get_field_from_name/il2cpp_field_get_offset). No new
+        // DllImport, no klass-internal raw dump, no other IL2CPP API. Only
+        // re-resolved when delegateKlass itself changes (it was CONFIRMED
+        // constant across DEAD/LIVE in Chapter127.1, so this should resolve
+        // once per session in practice); otherwise the cached name/namespace
+        // strings are reused to avoid redundant native calls every sample.
+        private static bool _haveResolvedKlass;
+        private static IntPtr _lastResolvedKlass = IntPtr.Zero;
+        private static string _cachedDelegateNamespace = "?";
+        private static string _cachedDelegateClass = "?";
 
         internal static void Sample()
         {
@@ -295,6 +312,7 @@ namespace NocturneModernController
                 // single Marshal.ReadIntPtr) and logged via the same
                 // change-gated summary as everything else here.
                 IntPtr delegateKlass = SafeReadIntPtr(delegateField, DelegateKlassOffset);
+                ResolveDelegateKlassNameIfChanged(delegateKlass);
 
                 int bucketsLen = bucketsPtr == IntPtr.Zero ? -1 : Marshal.ReadInt32(bucketsPtr, ArrayLengthOffset);
                 int entriesLen = entriesPtr == IntPtr.Zero ? -1 : Marshal.ReadInt32(entriesPtr, ArrayLengthOffset);
@@ -302,7 +320,8 @@ namespace NocturneModernController
                 var sb = new System.Text.StringBuilder();
                 sb.Append($"bucketsPtr=0x{bucketsPtr.ToInt64():X} bucketsLen={bucketsLen} ");
                 sb.Append($"entriesPtr=0x{entriesPtr.ToInt64():X} entriesLen={entriesLen} ");
-                sb.Append($"delegateField=0x{delegateField.ToInt64():X} delegateKlass=0x{delegateKlass.ToInt64():X} entries=[");
+                sb.Append($"delegateField=0x{delegateField.ToInt64():X} delegateKlass=0x{delegateKlass.ToInt64():X} ");
+                sb.Append($"delegateNamespace={_cachedDelegateNamespace} delegateClass={_cachedDelegateClass} entries=[");
 
                 if (entriesPtr != IntPtr.Zero && entriesLen > 0)
                 {
@@ -327,6 +346,48 @@ namespace NocturneModernController
             catch (Exception ex)
             {
                 return $"dictDump-ERROR({ex.GetType().Name})";
+            }
+        }
+
+        // Chapter 127.6: resolves delegateKlass's namespace/class name only
+        // when delegateKlass itself differs from the last-resolved value
+        // (identity check, not a per-frame call) - avoids calling the
+        // native il2cpp_class_get_name/il2cpp_class_get_namespace exports
+        // every sample. Uses ONLY Il2CppInterop.Runtime.IL2CPP's existing
+        // wrappers (no new DllImport, no other IL2CPP API, no klass-internal
+        // raw dump, no dereference of entry.value). Read-only metadata
+        // query: does not initialize, instantiate, or invoke anything.
+        private static void ResolveDelegateKlassNameIfChanged(IntPtr delegateKlass)
+        {
+            if (_haveResolvedKlass && delegateKlass == _lastResolvedKlass)
+            {
+                return;
+            }
+            _haveResolvedKlass = true;
+            _lastResolvedKlass = delegateKlass;
+
+            if (delegateKlass == IntPtr.Zero)
+            {
+                _cachedDelegateNamespace = "";
+                _cachedDelegateClass = "NULL";
+                return;
+            }
+
+            try
+            {
+                IntPtr namePtr = IL2CPP.il2cpp_class_get_name(delegateKlass);
+                IntPtr namespacePtr = IL2CPP.il2cpp_class_get_namespace(delegateKlass);
+                _cachedDelegateClass = namePtr == IntPtr.Zero
+                    ? "NULL"
+                    : (Marshal.PtrToStringAnsi(namePtr) ?? "?");
+                _cachedDelegateNamespace = namespacePtr == IntPtr.Zero
+                    ? ""
+                    : (Marshal.PtrToStringAnsi(namespacePtr) ?? "");
+            }
+            catch (Exception ex)
+            {
+                _cachedDelegateNamespace = "";
+                _cachedDelegateClass = $"ERROR({ex.GetType().Name})";
             }
         }
 
