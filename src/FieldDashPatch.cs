@@ -15,9 +15,9 @@ namespace NocturneModernController
         // Dungeon doors use thin event/collision volumes.  At x1.60 the
         // player can cross one between field ticks, so keep dungeon movement
         // below that tunnelling threshold.  The world map has no such doors
-        // and retains the established x1.60 feel.
+        // and uses the same conservative x1.50 multiplier.
         private const float DungeonMultiplier = 1.50f;
-        private const float WorldMapMultiplier = 1.60f;
+        private const float WorldMapMultiplier = 1.50f;
         private const int NormalSpeedRva = 0x02AF1FF8;
         private const int AlternateSpeedRva = 0x028C7528;
         private const int WorldMapSpeedRva = 0x028C9E30;
@@ -117,7 +117,7 @@ namespace NocturneModernController
                 _loggedHeld = true;
                 MelonLogger.Msg(
                     "[NocturneModernController] Dash ON " +
-                    "(P/LT/RT, dungeon x1.50 / world map x1.60)");
+                    "(P/LT/RT, dungeon x1.50 / world map x1.50)");
             }
         }
 

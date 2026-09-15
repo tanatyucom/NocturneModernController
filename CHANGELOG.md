@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.3 - 2026-09-16
+
+- Reduced Field Dash speed to 1.5x.
+- Fixed an issue where excessive dash speed could allow the player to enter areas that are normally inaccessible.
+- Right-stick and controller behavior are otherwise unchanged.
+
 ## 2.0.2 - 2026-09-12
 
 - Added support for multi-value external feature settings.
