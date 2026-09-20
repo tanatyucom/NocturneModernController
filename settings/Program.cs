@@ -9,6 +9,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows.Forms;
+using NocturneModernController;
 
 internal enum RightStickMode { FullCamera, HorizontalTurn }
 internal enum AutoBattleMode { NormalAttackOnly, SkillPriority }
@@ -42,6 +43,13 @@ internal sealed class ActionDefinition
     public string Description { get; set; } = string.Empty;
     public ControllerContext Contexts { get; set; }
     public ControllerActionBehavior Behavior { get; set; }
+    public List<DefaultBindingDefinition> DefaultBindings { get; set; } = new();
+}
+
+internal sealed class DefaultBindingDefinition
+{
+    public ControllerContext Context { get; set; }
+    public List<ControllerButton> Buttons { get; set; } = new();
 }
 
 internal sealed class BindingEntry
@@ -49,6 +57,7 @@ internal sealed class BindingEntry
     public ControllerContext Context { get; set; }
     public List<ControllerButton> Buttons { get; set; } = new();
     public string ActionId { get; set; } = string.Empty;
+    public string Source { get; set; } = "User";
 }
 
 internal sealed class FeatureMetadata
@@ -115,6 +124,9 @@ internal sealed class SettingsForm : Form
     private readonly int _gamePid;
     private readonly List<ActionDefinition> _actions;
     private readonly List<BindingEntry> _bindings;
+    private readonly List<BindingOverrideEntry> _bindingOverrides;
+    private readonly List<SavedBindingConflict<BindingEntry>> _savedBindingConflicts;
+    private readonly bool _bindingsLoadedFromLegacy;
     private readonly List<FeatureProviderMetadata> _featureProviders;
     private readonly Dictionary<CheckBox, (string ProviderId, string FeatureId, bool Initial)> _featureToggles = new();
     private readonly Dictionary<ComboBox, (string ProviderId, string FeatureId, string Initial)> _featureValueSelectors = new();
@@ -140,7 +152,11 @@ internal sealed class SettingsForm : Form
         _featureRequestsPath = featureRequestsPath;
         _gamePid = gamePid;
         _actions = Read<List<ActionDefinition>>(registryPath) ?? new List<ActionDefinition>();
-        _bindings = Read<List<BindingEntry>>(bindingsPath) ?? new List<BindingEntry>();
+        BindingLoadResult<BindingEntry> loadedBindings = ReadBindings(bindingsPath);
+        _bindings = loadedBindings.Bindings;
+        _bindingOverrides = loadedBindings.Overrides;
+        _savedBindingConflicts = loadedBindings.SavedConflicts;
+        _bindingsLoadedFromLegacy = loadedBindings.IsLegacy;
         _featureProviders = Read<List<FeatureProviderMetadata>>(featuresPath) ?? new List<FeatureProviderMetadata>();
         SettingsModel initialSettings = Read<SettingsModel>(_settingsPath) ?? new SettingsModel();
         _japanese = initialSettings.UiLanguage.Equals("Japanese", StringComparison.OrdinalIgnoreCase) ||
@@ -194,6 +210,30 @@ internal sealed class SettingsForm : Form
         _context.Width = 180;
         _context.SelectedIndexChanged += (_, _) => RefreshPadLabels();
         page.Controls.Add(_context);
+        var resetContext = new Button
+        {
+            Text = L("この場面をリセット", "Reset Context"),
+            Location = new Point(215, 48),
+            Size = new Size(150, 32)
+        };
+        var resetAll = new Button
+        {
+            Text = L("すべてリセット", "Reset All"),
+            Location = new Point(375, 48),
+            Size = new Size(135, 32)
+        };
+        var status = new Button
+        {
+            Text = L("割当状態", "Binding Status"),
+            Location = new Point(520, 48),
+            Size = new Size(135, 32)
+        };
+        resetContext.Click += (_, _) => ResetCurrentContext();
+        resetAll.Click += (_, _) => ResetAllBindings();
+        status.Click += (_, _) => ShowBindingStatus();
+        page.Controls.Add(resetContext);
+        page.Controls.Add(resetAll);
+        page.Controls.Add(status);
 
         _padPanel.Location = new Point(22, 90);
         _padPanel.Size = new Size(850, 450);
@@ -499,7 +539,15 @@ internal sealed class SettingsForm : Form
     private void EditButton(ControllerButton primary)
     {
         ControllerContext context = (ControllerContext)_context.SelectedItem;
-        using var dialog = new AssignmentDialog(context, primary, _actions, _bindings, _japanese);
+        using var dialog = new AssignmentDialog(
+            context,
+            primary,
+            _actions,
+            _bindings,
+            _japanese,
+            AssignUserBinding,
+            SetUnassignedOverride,
+            ResetAction);
         TopMost = false;
         dialog.TopMost = true;
         try
@@ -584,8 +632,17 @@ internal sealed class SettingsForm : Form
                 ? 2.0f
                 : _autoBattleSpeed.SelectedIndex == 1 ? 1.5f : 1.0f;
         var options = new JsonSerializerOptions { WriteIndented = true };
-        File.WriteAllText(_settingsPath, JsonSerializer.Serialize(settings, options));
-        File.WriteAllText(_bindingsPath, JsonSerializer.Serialize(_bindings, options));
+        AtomicJsonFile.WriteJsonAtomic(_settingsPath, JsonSerializer.Serialize(settings, options));
+        BindingFileMigration.CreateLegacyBackupOnce(
+            _bindingsPath,
+            _bindingsLoadedFromLegacy);
+        AtomicJsonFile.WriteJsonAtomic(
+            _bindingsPath,
+            JsonSerializer.Serialize(
+                BindingFileMigration.CreateV1(
+                    _bindings.Concat(_savedBindingConflicts.SelectMany(conflict => conflict.Bindings)),
+                    _bindingOverrides),
+                options));
         var requests = _featureToggles
             .Where(pair => pair.Key.Checked != pair.Value.Initial)
             .Select(pair => new FeatureToggleRequest
@@ -604,15 +661,310 @@ internal sealed class SettingsForm : Form
                     Value = ((FeatureValueOption)pair.Key.SelectedItem!).RawValue
                 }))
             .ToList();
-        File.WriteAllText(_featureRequestsPath, JsonSerializer.Serialize(requests, options));
+        AtomicJsonFile.WriteJsonAtomic(_featureRequestsPath, JsonSerializer.Serialize(requests, options));
         Close();
     }
+
+    private void AssignUserBinding(
+        ControllerContext context,
+        IReadOnlyList<ControllerButton> buttons,
+        string actionId)
+    {
+        int[] canonicalButtons = buttons
+            .Where(button => button != ControllerButton.None)
+            .Distinct()
+            .Take(3)
+            .OrderBy(button => button)
+            .Select(button => (int)button)
+            .ToArray();
+        string slotKey = DefaultBindingResolver.SlotKey((int)context, canonicalButtons);
+        _savedBindingConflicts.RemoveAll(conflict =>
+            conflict.SlotKey == slotKey ||
+            conflict.Bindings.Any(binding =>
+                binding.Context == context &&
+                binding.ActionId.Equals(actionId, StringComparison.OrdinalIgnoreCase)));
+        BindingEditOperations.AssignUser(
+            _bindings,
+            _bindingOverrides,
+            (int)context,
+            actionId,
+            canonicalButtons,
+            binding => (int)binding.Context,
+            binding => binding.ActionId,
+            binding => binding.Buttons.OrderBy(button => button).Select(button => (int)button).ToArray(),
+            () => new BindingEntry
+            {
+                Context = context,
+                Buttons = canonicalButtons.Select(button => (ControllerButton)button).ToList(),
+                ActionId = actionId,
+                Source = "User"
+            });
+    }
+
+    private void SetUnassignedOverride(ControllerContext context, string actionId)
+    {
+        BindingEditOperations.SetUnassigned(
+            _bindings,
+            _bindingOverrides,
+            (int)context,
+            actionId,
+            binding => (int)binding.Context,
+            binding => binding.ActionId);
+    }
+
+    private void ResetAction(ControllerContext context, string actionId)
+    {
+        _savedBindingConflicts.RemoveAll(conflict => conflict.Bindings.Any(binding =>
+            binding.Context == context &&
+            binding.ActionId.Equals(actionId, StringComparison.OrdinalIgnoreCase)));
+        BindingEditOperations.ResetAction(
+            _bindings,
+            _bindingOverrides,
+            (int)context,
+            actionId,
+            binding => (int)binding.Context,
+            binding => binding.ActionId);
+        ResolveBindingsLocally();
+    }
+
+    private void ResetCurrentContext()
+    {
+        if (!(_context.SelectedItem is ControllerContext context))
+        {
+            return;
+        }
+        BindingEditOperations.ResetContext(
+            _bindings,
+            _bindingOverrides,
+            (int)context,
+            binding => (int)binding.Context);
+        _savedBindingConflicts.RemoveAll(conflict =>
+            conflict.Bindings.Any(binding => binding.Context == context));
+        ResolveBindingsLocally();
+        RefreshPadLabels();
+    }
+
+    private void ResetAllBindings()
+    {
+        BindingEditOperations.ResetAll(_bindings, _bindingOverrides);
+        _savedBindingConflicts.Clear();
+        ResolveBindingsLocally();
+        RefreshPadLabels();
+    }
+
+    private void ResolveBindingsLocally()
+    {
+        foreach (DefaultBindingCandidate resolved in AnalyzeDefaultBindings().Applied)
+        {
+            _bindings.Add(new BindingEntry
+            {
+                Context = (ControllerContext)resolved.Context,
+                Buttons = resolved.Buttons.Select(button => (ControllerButton)button).ToList(),
+                ActionId = resolved.ActionId,
+                Source = "Default"
+            });
+        }
+    }
+
+    private DefaultBindingResolver.Resolution AnalyzeDefaultBindings()
+    {
+        var actionIds = new HashSet<string>(
+            _actions.Select(action => action.ActionId),
+            StringComparer.OrdinalIgnoreCase);
+        var savedActionContexts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var occupiedSlots = new HashSet<string>(StringComparer.Ordinal);
+        foreach (BindingEntry binding in _bindings.Where(binding => actionIds.Contains(binding.ActionId)))
+        {
+            savedActionContexts.Add(DefaultBindingResolver.ActionContextKey(
+                (int)binding.Context,
+                binding.ActionId));
+            occupiedSlots.Add(DefaultBindingResolver.SlotKey(
+                (int)binding.Context,
+                binding.Buttons.OrderBy(button => button).Select(button => (int)button)));
+        }
+        foreach (BindingEntry binding in _savedBindingConflicts
+                     .SelectMany(conflict => conflict.Bindings)
+                     .Where(binding => actionIds.Contains(binding.ActionId)))
+        {
+            savedActionContexts.Add(DefaultBindingResolver.ActionContextKey(
+                (int)binding.Context,
+                binding.ActionId));
+        }
+        var overrides = new HashSet<string>(
+            _bindingOverrides.Select(entry => DefaultBindingResolver.ActionContextKey(
+                entry.Context,
+                entry.ActionId)),
+            StringComparer.OrdinalIgnoreCase);
+        IEnumerable<DefaultBindingCandidate> candidates = _actions.SelectMany(action =>
+            action.DefaultBindings
+                .Where(binding => binding.Context is ControllerContext.Field or
+                    ControllerContext.Battle or ControllerContext.Puzzle or
+                    ControllerContext.WorldMap or ControllerContext.Menu)
+                .Select(binding => new DefaultBindingCandidate
+                {
+                    Context = (int)binding.Context,
+                    Buttons = binding.Buttons
+                        .Where(button => button != ControllerButton.None)
+                        .Distinct()
+                        .Take(3)
+                        .OrderBy(button => button)
+                        .Select(button => (int)button)
+                        .ToArray(),
+                    ActionId = action.ActionId
+                })
+                .Where(candidate => candidate.Buttons.Count > 0));
+        return DefaultBindingResolver.Analyze(
+            candidates,
+            savedActionContexts,
+            occupiedSlots,
+            overrides);
+    }
+
+    private void ShowBindingStatus()
+    {
+        string content = string.Join(
+            Environment.NewLine + Environment.NewLine,
+            BuildBindingStatusItems().Select(BindingStatusFormatter.Format));
+        using var dialog = new Form
+        {
+            Text = L("バインド状態", "Binding Status"),
+            StartPosition = FormStartPosition.CenterParent,
+            ClientSize = new Size(660, 480),
+            MinimizeBox = false,
+            MaximizeBox = false
+        };
+        dialog.Controls.Add(new TextBox
+        {
+            Multiline = true,
+            ReadOnly = true,
+            ScrollBars = ScrollBars.Vertical,
+            Dock = DockStyle.Fill,
+            Font = new Font("Segoe UI", 10),
+            Text = content.Length == 0 ? L("状態情報はありません。", "No binding status is available.") : content
+        });
+        dialog.ShowDialog(this);
+    }
+
+    private IReadOnlyList<BindingStatusItem> BuildBindingStatusItems()
+    {
+        DefaultBindingResolver.Resolution resolution = AnalyzeDefaultBindings();
+        var items = new List<BindingStatusItem>();
+        ControllerContext[] contexts =
+        {
+            ControllerContext.Field,
+            ControllerContext.WorldMap,
+            ControllerContext.Battle,
+            ControllerContext.Menu,
+            ControllerContext.Puzzle
+        };
+        foreach (ActionDefinition action in _actions.OrderBy(action => action.ActionId, StringComparer.OrdinalIgnoreCase))
+        {
+            foreach (ControllerContext context in contexts.Where(context => action.Contexts.HasFlag(context)))
+            {
+                BindingEntry? binding = _bindings.FirstOrDefault(entry =>
+                    entry.Context == context &&
+                    entry.ActionId.Equals(action.ActionId, StringComparison.OrdinalIgnoreCase));
+                DefaultBindingResolver.DefaultBindingConflict? conflict = resolution.Conflicts.FirstOrDefault(entry =>
+                    entry.Context == (int)context &&
+                    entry.ActionIds.Contains(action.ActionId, StringComparer.OrdinalIgnoreCase));
+                bool unassigned = _bindingOverrides.Any(entry =>
+                    entry.Context == (int)context &&
+                    entry.ActionId.Equals(action.ActionId, StringComparison.OrdinalIgnoreCase));
+                DefaultBindingDefinition? defaultBinding = action.DefaultBindings.FirstOrDefault(entry =>
+                    entry.Context == context);
+                items.Add(new BindingStatusItem
+                {
+                    DisplayName = GetActionDisplayName(action.ActionId),
+                    Context = context.ToString(),
+                    Status = binding != null ? "Bound" :
+                        unassigned ? "Unassigned by user" :
+                        conflict != null ? "Default Conflict" : "Unassigned",
+                    DefaultBinding = defaultBinding == null ? string.Empty : FormatButtons(defaultBinding.Buttons),
+                    ConflictsWith = conflict == null
+                        ? Array.Empty<string>()
+                        : conflict.ActionIds
+                            .Where(id => !id.Equals(action.ActionId, StringComparison.OrdinalIgnoreCase))
+                            .Select(GetActionDisplayName)
+                            .ToArray()
+                });
+            }
+        }
+        var registered = new HashSet<string>(_actions.Select(action => action.ActionId), StringComparer.OrdinalIgnoreCase);
+        items.AddRange(_bindings
+            .Where(binding => !registered.Contains(binding.ActionId))
+            .Select(binding => new BindingStatusItem
+            {
+                DisplayName = binding.ActionId,
+                Context = binding.Context.ToString(),
+                Status = "Not currently registered"
+            }));
+        foreach (SavedBindingConflict<BindingEntry> savedConflict in _savedBindingConflicts)
+        {
+            foreach (BindingEntry binding in savedConflict.Bindings)
+            {
+                items.Add(new BindingStatusItem
+                {
+                    DisplayName = GetActionDisplayName(binding.ActionId),
+                    Context = binding.Context.ToString(),
+                    Status = "Saved Binding Conflict",
+                    DefaultBinding = FormatButtons(binding.Buttons),
+                    ConflictsWith = savedConflict.Bindings
+                        .Where(other => !ReferenceEquals(other, binding))
+                        .Select(other => GetActionDisplayName(other.ActionId))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToArray()
+                });
+            }
+        }
+        return items
+            .OrderBy(item => item.Context, StringComparer.Ordinal)
+            .ThenBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Status, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static string FormatButtons(IEnumerable<ControllerButton> buttons) =>
+        string.Join(" + ", buttons.Where(button => button != ControllerButton.None));
 
     private static T? Read<T>(string path)
     {
         try { return File.Exists(path) ? JsonSerializer.Deserialize<T>(File.ReadAllText(path)) : default; }
         catch { return default; }
     }
+
+    private static BindingLoadResult<BindingEntry> ReadBindings(string path)
+    {
+        try
+        {
+            return BindingFileMigration.Read<BindingEntry>(
+                path,
+                IsValidBinding,
+                GetBindingSlotKey,
+                binding => binding.Source = "Legacy");
+        }
+        catch
+        {
+            return new BindingLoadResult<BindingEntry>();
+        }
+    }
+
+    private static bool IsValidBinding(BindingEntry binding) =>
+        binding.Context is ControllerContext.Field or ControllerContext.Battle or
+            ControllerContext.Puzzle or ControllerContext.WorldMap or ControllerContext.Menu &&
+        !string.IsNullOrWhiteSpace(binding.ActionId) &&
+        binding.Buttons != null &&
+        binding.Buttons.Count is >= 1 and <= 3 &&
+        binding.Buttons.All(button =>
+            button is >= ControllerButton.A and <= ControllerButton.DPadRight) &&
+        binding.Buttons.Distinct().Count() == binding.Buttons.Count &&
+        binding.Source is "Legacy" or "Default" or "User";
+
+    private static string GetBindingSlotKey(BindingEntry binding) =>
+        ((int)binding.Context) + ":" + string.Join(",", binding.Buttons
+            .Where(button => button != ControllerButton.None)
+            .Distinct()
+            .Take(3)
+            .OrderBy(button => button));
 
     private string L(string japanese, string english) => _japanese ? japanese : english;
 
@@ -738,13 +1090,25 @@ internal sealed class AssignmentDialog : Form
     private readonly List<ActionDefinition> _actions;
     private readonly List<BindingEntry> _bindings;
     private readonly bool _japanese;
+    private readonly Action<ControllerContext, IReadOnlyList<ControllerButton>, string> _assignUser;
+    private readonly Action<ControllerContext, string> _setUnassigned;
+    private readonly Action<ControllerContext, string> _resetAction;
     private readonly ComboBox _action = new ComboBox();
     private readonly CheckedListBox _buttons = new CheckedListBox();
     private readonly ListBox _current = new ListBox();
 
-    internal AssignmentDialog(ControllerContext context, ControllerButton primary, List<ActionDefinition> actions, List<BindingEntry> bindings, bool japanese)
+    internal AssignmentDialog(
+        ControllerContext context,
+        ControllerButton primary,
+        List<ActionDefinition> actions,
+        List<BindingEntry> bindings,
+        bool japanese,
+        Action<ControllerContext, IReadOnlyList<ControllerButton>, string> assignUser,
+        Action<ControllerContext, string> setUnassigned,
+        Action<ControllerContext, string> resetAction)
     {
         _context = context; _primary = primary; _actions = actions; _bindings = bindings; _japanese = japanese;
+        _assignUser = assignUser; _setUnassigned = setUnassigned; _resetAction = resetAction;
         Text = context + " / " + primary + (japanese ? " の割当" : " Bindings");
         ClientSize = new Size(610, 430);
         StartPosition = FormStartPosition.CenterParent;
@@ -759,15 +1123,17 @@ internal sealed class AssignmentDialog : Form
         _current.Location = new Point(310, 100); _current.Size = new Size(270, 210);
         RefreshCurrent();
         var add = new Button { Text = japanese ? "割当を追加／置換" : "Add / Replace", Location = new Point(20, 330), Size = new Size(160, 36) };
-        var remove = new Button { Text = japanese ? "選択した割当を解除" : "Remove Selected", Location = new Point(310, 330), Size = new Size(160, 36) };
+        var remove = new Button { Text = japanese ? "選択した機能をNone" : "Set Selected to None", Location = new Point(190, 330), Size = new Size(180, 36) };
+        var reset = new Button { Text = japanese ? "この機能をリセット" : "Reset this Action", Location = new Point(380, 330), Size = new Size(180, 36) };
         var close = new Button { Text = japanese ? "閉じる" : "Close", Location = new Point(480, 375), Size = new Size(100, 32), DialogResult = DialogResult.OK };
         add.Click += (_, _) => AddBinding();
         remove.Click += (_, _) => RemoveBinding();
+        reset.Click += (_, _) => ResetSelectedAction();
         Controls.AddRange(new Control[] {
             new Label { Text = japanese ? "機能（この場面に対応する登録機能のみ）" : "Action (available in this context)", Location = new Point(20, 18), AutoSize = true }, _action,
             new Label { Text = japanese ? "入力ジェスチャー（最大3ボタン）" : "Input chord (up to 3 buttons)", Location = new Point(20, 78), AutoSize = true }, _buttons,
             new Label { Text = japanese ? "現在このボタンを含む割当" : "Bindings containing this button", Location = new Point(310, 78), AutoSize = true }, _current,
-            add, remove, close });
+            add, remove, reset, close });
     }
 
     private void AddBinding()
@@ -775,14 +1141,25 @@ internal sealed class AssignmentDialog : Form
         if (!(_action.SelectedItem is ActionItem selected)) return;
         List<ControllerButton> chord = _buttons.CheckedItems.Cast<ControllerButton>().Distinct().Take(3).OrderBy(x => x).ToList();
         if (chord.Count == 0 || !chord.Contains(_primary)) { MessageBox.Show(_japanese ? "クリックしたボタンを含めてください。" : "The chord must include the button you clicked."); return; }
-        _bindings.RemoveAll(binding => binding.Context == _context && binding.Buttons.OrderBy(x => x).SequenceEqual(chord));
-        _bindings.Add(new BindingEntry { Context = _context, Buttons = chord, ActionId = selected.Definition.ActionId });
+        _assignUser(_context, chord, selected.Definition.ActionId);
         RefreshCurrent();
     }
 
     private void RemoveBinding()
     {
-        if (_current.SelectedItem is BindingItem item) _bindings.Remove(item.Binding);
+        if (_current.SelectedItem is BindingItem item)
+        {
+            _setUnassigned(_context, item.Binding.ActionId);
+        }
+        RefreshCurrent();
+    }
+
+    private void ResetSelectedAction()
+    {
+        if (_action.SelectedItem is ActionItem selected)
+        {
+            _resetAction(_context, selected.Definition.ActionId);
+        }
         RefreshCurrent();
     }
 

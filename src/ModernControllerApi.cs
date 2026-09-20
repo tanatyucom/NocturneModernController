@@ -72,6 +72,7 @@ namespace NocturneModernController
         public ControllerContext Context { get; set; }
         public List<ControllerButton> Buttons { get; set; } = new();
         public string ActionId { get; set; } = string.Empty;
+        public string Source { get; set; } = "Default";
     }
 
     public sealed class FeatureMetadata
@@ -122,9 +123,12 @@ namespace NocturneModernController
         private static readonly Dictionary<string, ControllerActionDefinition> Actions =
             new(StringComparer.OrdinalIgnoreCase);
         private static readonly List<ControllerBindingEntry> Bindings = new();
+        private static readonly List<BindingOverrideEntry> BindingOverrides = new();
+        private static readonly List<SavedBindingConflict<ControllerBindingEntry>> SavedBindingConflicts = new();
         private static readonly Dictionary<string, IModernFeatureProvider> FeatureProviders =
             new(StringComparer.OrdinalIgnoreCase);
         private static bool _bindingsLoaded;
+        private static bool _bindingsLoadedFromLegacy;
 
         public static void RegisterFeatureProvider(IModernFeatureProvider provider)
         {
@@ -223,22 +227,80 @@ namespace NocturneModernController
             }
 
             Actions[definition.ActionId] = definition;
+        }
+
+        internal static void ResolveBindings()
+        {
             EnsureBindingsLoaded();
-            foreach (ControllerDefaultBinding defaultBinding in definition.DefaultBindings)
+            var registeredActionIds = new HashSet<string>(
+                Actions.Keys,
+                StringComparer.OrdinalIgnoreCase);
+            var savedActionContexts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var occupiedSlots = new HashSet<string>(StringComparer.Ordinal);
+            foreach (ControllerBindingEntry binding in Bindings)
             {
-                bool exists = Bindings.Any(binding =>
-                    binding.Context == defaultBinding.Context &&
-                    SameChord(binding.Buttons, defaultBinding.Buttons));
-                if (!exists)
+                if (!registeredActionIds.Contains(binding.ActionId))
                 {
-                    Bindings.Add(new ControllerBindingEntry
-                    {
-                        Context = defaultBinding.Context,
-                        Buttons = NormalizeChord(defaultBinding.Buttons),
-                        ActionId = definition.ActionId
-                    });
+                    continue;
+                }
+
+                savedActionContexts.Add(DefaultBindingResolver.ActionContextKey(
+                    (int)binding.Context,
+                    binding.ActionId));
+                occupiedSlots.Add(DefaultBindingResolver.SlotKey(
+                    (int)binding.Context,
+                    NormalizeChord(binding.Buttons).Select(button => (int)button)));
+            }
+            foreach (ControllerBindingEntry binding in SavedBindingConflicts
+                         .SelectMany(conflict => conflict.Bindings))
+            {
+                if (registeredActionIds.Contains(binding.ActionId))
+                {
+                    savedActionContexts.Add(DefaultBindingResolver.ActionContextKey(
+                        (int)binding.Context,
+                        binding.ActionId));
                 }
             }
+
+            var unassignedOverrides = new HashSet<string>(
+                BindingOverrides
+                    .Where(entry => entry.State == "Unassigned")
+                    .Select(entry => DefaultBindingResolver.ActionContextKey(
+                        entry.Context,
+                        entry.ActionId)),
+                StringComparer.OrdinalIgnoreCase);
+            var candidates = Actions.Values.SelectMany(action =>
+                action.DefaultBindings
+                    .Select(binding => new
+                    {
+                        Binding = binding,
+                        Buttons = NormalizeChord(binding.Buttons)
+                    })
+                    .Where(item =>
+                        IsSingleContext(item.Binding.Context) &&
+                        item.Buttons.Count > 0)
+                    .Select(item => new DefaultBindingCandidate
+                    {
+                        Context = (int)item.Binding.Context,
+                        Buttons = item.Buttons.Select(button => (int)button).ToArray(),
+                        ActionId = action.ActionId
+                    }));
+
+            foreach (DefaultBindingCandidate resolved in DefaultBindingResolver.Resolve(
+                         candidates,
+                         savedActionContexts,
+                         occupiedSlots,
+                         unassignedOverrides))
+            {
+                Bindings.Add(new ControllerBindingEntry
+                {
+                    Context = (ControllerContext)resolved.Context,
+                    Buttons = resolved.Buttons.Select(button => (ControllerButton)button).ToList(),
+                    ActionId = resolved.ActionId,
+                    Source = "Default"
+                });
+            }
+
             SaveSnapshots();
         }
 
@@ -247,6 +309,47 @@ namespace NocturneModernController
 
         public static IReadOnlyList<ControllerBindingEntry> GetBindings() =>
             Bindings.ToArray();
+
+        internal static void SetUnassignedOverride(
+            ControllerContext context,
+            string actionId)
+        {
+            EnsureBindingsLoaded();
+            if (!IsSingleContext(context) || string.IsNullOrWhiteSpace(actionId))
+            {
+                throw new ArgumentException("A single context and ActionId are required.");
+            }
+
+            BindingEditOperations.SetUnassigned(
+                Bindings,
+                BindingOverrides,
+                (int)context,
+                actionId,
+                binding => (int)binding.Context,
+                binding => binding.ActionId);
+        }
+
+        internal static void ClearUnassignedOverride(
+            ControllerContext context,
+            string actionId)
+        {
+            EnsureBindingsLoaded();
+            BindingEditOperations.ClearOverride(
+                BindingOverrides,
+                (int)context,
+                actionId);
+        }
+
+        internal static bool HasUnassignedOverride(
+            ControllerContext context,
+            string actionId)
+        {
+            EnsureBindingsLoaded();
+            return BindingEditOperations.HasOverride(
+                BindingOverrides,
+                (int)context,
+                actionId);
+        }
 
         public static bool IsHeld(string actionId, ControllerContext context, int padNumber = 0)
         {
@@ -298,8 +401,20 @@ namespace NocturneModernController
             string directory = ModDirectory;
             Directory.CreateDirectory(directory);
             var options = new JsonSerializerOptions { WriteIndented = true };
-            File.WriteAllText(RegistryPath, JsonSerializer.Serialize(Actions.Values, options));
-            File.WriteAllText(BindingsPath, JsonSerializer.Serialize(Bindings, options));
+            AtomicJsonFile.WriteJsonAtomic(
+                RegistryPath,
+                JsonSerializer.Serialize(Actions.Values, options));
+            BindingFileMigration.CreateLegacyBackupOnce(
+                BindingsPath,
+                _bindingsLoadedFromLegacy);
+            AtomicJsonFile.WriteJsonAtomic(
+                BindingsPath,
+                JsonSerializer.Serialize(
+                    BindingFileMigration.CreateV1(
+                        Bindings.Concat(SavedBindingConflicts.SelectMany(conflict => conflict.Bindings)),
+                        BindingOverrides),
+                    options));
+            _bindingsLoadedFromLegacy = false;
             SaveFeatureSnapshot();
         }
 
@@ -308,7 +423,7 @@ namespace NocturneModernController
             string directory = ModDirectory;
             Directory.CreateDirectory(directory);
             var options = new JsonSerializerOptions { WriteIndented = true };
-            File.WriteAllText(
+            AtomicJsonFile.WriteJsonAtomic(
                 FeaturesPath,
                 JsonSerializer.Serialize(GetFeatureProviders(), options));
         }
@@ -340,7 +455,7 @@ namespace NocturneModernController
                     }
                     if (unhandled.Count > 0)
                     {
-                        File.WriteAllText(
+                        AtomicJsonFile.WriteJsonAtomic(
                             FeatureRequestsPath,
                             JsonSerializer.Serialize(
                                 unhandled,
@@ -444,23 +559,52 @@ namespace NocturneModernController
             }
             _bindingsLoaded = true;
             Bindings.Clear();
+            BindingOverrides.Clear();
+            SavedBindingConflicts.Clear();
+            _bindingsLoadedFromLegacy = false;
             try
             {
-                if (File.Exists(BindingsPath))
+                BindingLoadResult<ControllerBindingEntry> loaded =
+                    BindingFileMigration.Read<ControllerBindingEntry>(
+                        BindingsPath,
+                        IsValidBinding,
+                        GetBindingSlotKey,
+                        binding => binding.Source = "Legacy");
+                Bindings.AddRange(loaded.Bindings);
+                BindingOverrides.AddRange(loaded.Overrides);
+                SavedBindingConflicts.AddRange(loaded.SavedConflicts);
+                foreach (SavedBindingConflict<ControllerBindingEntry> conflict in loaded.SavedConflicts)
                 {
-                    List<ControllerBindingEntry>? loaded =
-                        JsonSerializer.Deserialize<List<ControllerBindingEntry>>(
-                            File.ReadAllText(BindingsPath));
-                    if (loaded != null)
-                    {
-                        Bindings.AddRange(loaded);
-                    }
+                    MelonLoader.MelonLogger.Warning(
+                        "[NocturneModernController] SavedBindingConflict " +
+                        conflict.SlotKey + ": " +
+                        string.Join(", ", conflict.Bindings
+                            .Select(binding => binding.ActionId)
+                            .OrderBy(actionId => actionId, StringComparer.OrdinalIgnoreCase)));
                 }
+                _bindingsLoadedFromLegacy = loaded.IsLegacy;
             }
             catch
             {
             }
         }
+
+        private static bool IsValidBinding(ControllerBindingEntry binding) =>
+            IsSingleContext(binding.Context) &&
+            !string.IsNullOrWhiteSpace(binding.ActionId) &&
+            binding.Buttons != null &&
+            binding.Buttons.Count is >= 1 and <= 3 &&
+            binding.Buttons.All(button =>
+                button is >= ControllerButton.A and <= ControllerButton.DPadRight) &&
+            binding.Buttons.Distinct().Count() == binding.Buttons.Count &&
+            binding.Source is "Legacy" or "Default" or "User";
+
+        private static bool IsSingleContext(ControllerContext context) =>
+            context is ControllerContext.Field or ControllerContext.Battle or
+                ControllerContext.Puzzle or ControllerContext.WorldMap or ControllerContext.Menu;
+
+        private static string GetBindingSlotKey(ControllerBindingEntry binding) =>
+            ((int)binding.Context) + ":" + string.Join(",", NormalizeChord(binding.Buttons));
 
         private static List<ControllerButton> NormalizeChord(IEnumerable<ControllerButton> buttons) =>
             buttons.Where(button => button != ControllerButton.None)

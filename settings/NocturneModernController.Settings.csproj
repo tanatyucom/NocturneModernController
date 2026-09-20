@@ -9,4 +9,12 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <Optimize>true</Optimize>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\shared\AtomicJsonFile.cs" Link="AtomicJsonFile.cs" />
+    <Compile Include="..\shared\BindingEditOperations.cs" Link="BindingEditOperations.cs" />
+    <Compile Include="..\shared\BindingFileMigration.cs" Link="BindingFileMigration.cs" />
+    <Compile Include="..\shared\BindingStatusFormatter.cs" Link="BindingStatusFormatter.cs" />
+    <Compile Include="..\shared\DefaultBindingResolver.cs" Link="DefaultBindingResolver.cs" />
+  </ItemGroup>
 </Project>

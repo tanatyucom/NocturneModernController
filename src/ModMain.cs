@@ -17,6 +17,7 @@ namespace NocturneModernController
             SmartAutoKnowledgeStore.Load();
             ModernControllerApi.RegisterFeatureProvider(BuiltInFeatureProvider.Instance);
             BuiltInControllerActions.Register(SettingsGuiController.IsAvailable);
+            ModernControllerApi.ResolveBindings();
             SdlRightStickInput.Initialize(LoggerInstance);
             HarmonyInstance.CreateClassProcessor(typeof(FieldDashPatch)).Patch();
             HarmonyInstance.CreateClassProcessor(typeof(PuzzleLogicalTurnPatch)).Patch();

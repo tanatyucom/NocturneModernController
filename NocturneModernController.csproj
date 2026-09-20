@@ -21,6 +21,7 @@
     <Compile Remove="helper\**\*.cs" />
     <Compile Remove="settings\**\*.cs" />
     <Compile Remove="tools\**\*.cs" />
+    <Compile Remove="tests\**\*.cs" />
     <Compile Remove="analysis\**\*.cs" />
     <Compile Remove="src\FieldCameraMainProbe.cs" />
     <Compile Remove="src\RightStickTurnInput.cs" />
