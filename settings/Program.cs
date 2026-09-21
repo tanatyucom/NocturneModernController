@@ -123,6 +123,8 @@ internal sealed class SettingsForm : Form
     private readonly string _featureRequestsPath;
     private readonly int _gamePid;
     private readonly List<ActionDefinition> _actions;
+    private readonly List<GameBindingSnapshotEntry> _gameBindings;
+    private readonly bool _gameBindingsAvailable;
     private readonly List<BindingEntry> _bindings;
     private readonly List<BindingOverrideEntry> _bindingOverrides;
     private readonly List<SavedBindingConflict<BindingEntry>> _savedBindingConflicts;
@@ -151,7 +153,10 @@ internal sealed class SettingsForm : Form
         _bindingsPath = bindingsPath;
         _featureRequestsPath = featureRequestsPath;
         _gamePid = gamePid;
-        _actions = Read<List<ActionDefinition>>(registryPath) ?? new List<ActionDefinition>();
+        ActionRegistrySnapshot<ActionDefinition> actionSnapshot = ReadActionSnapshot(registryPath);
+        _actions = actionSnapshot.Actions;
+        _gameBindings = actionSnapshot.GameBindings;
+        _gameBindingsAvailable = actionSnapshot.GameBindingsAvailable;
         BindingLoadResult<BindingEntry> loadedBindings = ReadBindings(bindingsPath);
         _bindings = loadedBindings.Bindings;
         _bindingOverrides = loadedBindings.Overrides;
@@ -831,7 +836,8 @@ internal sealed class SettingsForm : Form
             StartPosition = FormStartPosition.CenterParent,
             ClientSize = new Size(660, 480),
             MinimizeBox = false,
-            MaximizeBox = false
+            MaximizeBox = false,
+            TopMost = true
         };
         dialog.Controls.Add(new TextBox
         {
@@ -842,7 +848,16 @@ internal sealed class SettingsForm : Form
             Font = new Font("Segoe UI", 10),
             Text = content.Length == 0 ? L("状態情報はありません。", "No binding status is available.") : content
         });
-        dialog.ShowDialog(this);
+        TopMost = false;
+        try
+        {
+            dialog.ShowDialog(this);
+        }
+        finally
+        {
+            TopMost = true;
+            Activate();
+        }
     }
 
     private IReadOnlyList<BindingStatusItem> BuildBindingStatusItems()
@@ -916,6 +931,25 @@ internal sealed class SettingsForm : Form
                 });
             }
         }
+        if (_gameBindingsAvailable)
+        {
+            items.AddRange(_gameBindings.Select(binding => new BindingStatusItem
+            {
+                DisplayName = binding.KeyId + " [GAME]",
+                Context = binding.ControllerId,
+                Status = "Read-only",
+                CurrentBinding = binding.CurrentButton
+            }));
+        }
+        else
+        {
+            items.Add(new BindingStatusItem
+            {
+                DisplayName = "GAME Binding",
+                Context = "Native",
+                Status = "Unavailable"
+            });
+        }
         return items
             .OrderBy(item => item.Context, StringComparer.Ordinal)
             .ThenBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase)
@@ -930,6 +964,30 @@ internal sealed class SettingsForm : Form
     {
         try { return File.Exists(path) ? JsonSerializer.Deserialize<T>(File.ReadAllText(path)) : default; }
         catch { return default; }
+    }
+
+    private static ActionRegistrySnapshot<ActionDefinition> ReadActionSnapshot(string path)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return new ActionRegistrySnapshot<ActionDefinition>();
+            }
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
+            if (document.RootElement.ValueKind == JsonValueKind.Array)
+            {
+                return new ActionRegistrySnapshot<ActionDefinition>
+                {
+                    Actions = document.RootElement.Deserialize<List<ActionDefinition>>() ?? new()
+                };
+            }
+            return document.RootElement.Deserialize<ActionRegistrySnapshot<ActionDefinition>>() ?? new();
+        }
+        catch
+        {
+            return new ActionRegistrySnapshot<ActionDefinition>();
+        }
     }
 
     private static BindingLoadResult<BindingEntry> ReadBindings(string path)

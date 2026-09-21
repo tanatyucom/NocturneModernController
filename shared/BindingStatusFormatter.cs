@@ -10,6 +10,7 @@ namespace NocturneModernController
         internal string Context { get; init; } = string.Empty;
         internal string Status { get; init; } = string.Empty;
         internal string DefaultBinding { get; init; } = string.Empty;
+        internal string CurrentBinding { get; init; } = string.Empty;
         internal IReadOnlyList<string> ConflictsWith { get; init; } = Array.Empty<string>();
     }
 
@@ -25,6 +26,10 @@ namespace NocturneModernController
             if (!string.IsNullOrWhiteSpace(item.DefaultBinding))
             {
                 lines.Add("Default: " + item.DefaultBinding);
+            }
+            if (!string.IsNullOrWhiteSpace(item.CurrentBinding))
+            {
+                lines.Add("Current: " + item.CurrentBinding);
             }
             if (item.ConflictsWith.Count > 0)
             {

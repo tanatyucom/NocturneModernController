@@ -30,6 +30,9 @@ namespace NocturneModernController
 
         public override void OnUpdate()
         {
+            ModernControllerApi.RetryGameActionBindingsIfNeeded();
+            PadCfgDiagnosticProbe.Sample();
+            GameBindingProbe.Sample();
             SettingsGuiController.Sample();
             SdlRightStickInput.Sample();
             if (ControllerSettings.Current.SmartAutoEnabled)

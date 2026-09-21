@@ -401,9 +401,7 @@ namespace NocturneModernController
             string directory = ModDirectory;
             Directory.CreateDirectory(directory);
             var options = new JsonSerializerOptions { WriteIndented = true };
-            AtomicJsonFile.WriteJsonAtomic(
-                RegistryPath,
-                JsonSerializer.Serialize(Actions.Values, options));
+            WriteRegistrySnapshot(options);
             BindingFileMigration.CreateLegacyBackupOnce(
                 BindingsPath,
                 _bindingsLoadedFromLegacy);
@@ -417,6 +415,117 @@ namespace NocturneModernController
             _bindingsLoadedFromLegacy = false;
             SaveFeatureSnapshot();
         }
+
+        // index=7 is CONFIRMED as "Field/Dungeon Menu" (SESSION_RESUME_NOTES.md
+        // §17), but "GetConfigGamePad succeeds without throwing" is NOT the
+        // same as "the player's saved GAME binding is loaded" (§19,
+        // REJECTED by real-hardware evidence: a startup-time 34/34-success
+        // sweep, captured before dds3TitleInit had even run, returned a
+        // stale/default value for index=7 instead of the player's actual
+        // setting). The only readiness signal with real-hardware confirmation
+        // is FieldDashPatch.IsExplorationActive == true (the same gate
+        // GameBindingProbe used for the A/B/A that correctly tracked Y/X/Y).
+        // SaveSnapshots() still writes whatever partial/default result is
+        // available at startup so the file always exists; only a capture
+        // taken after exploration becomes active is treated as authoritative
+        // and allowed to mark readiness / refresh the registry file, without
+        // touching bindings.json or the feature snapshot (no effect on the
+        // binding resolver / user binding state).
+        private static bool _gameActionBindingsReady;
+        private static int _gameActionBindingsRetryFrame;
+        private const int GameActionBindingsRetryIntervalFrames = 45;
+
+        private static void WriteRegistrySnapshot(
+            JsonSerializerOptions options,
+            GameActionBindingSnapshotResult? gameActionBindingsOverride = null)
+        {
+            GameBindingSnapshotResult gameBindings = CaptureGameBindings();
+            GameActionBindingSnapshotResult gameActionBindings =
+                gameActionBindingsOverride ?? CaptureGameActionBindingsRaw();
+            AtomicJsonFile.WriteJsonAtomic(
+                RegistryPath,
+                JsonSerializer.Serialize(new ActionRegistrySnapshot<ControllerActionDefinition>
+                {
+                    Actions = Actions.Values
+                        .OrderBy(action => action.ActionId, StringComparer.OrdinalIgnoreCase)
+                        .ToList(),
+                    GameBindingsAvailable = gameBindings.Available,
+                    GameBindings = gameBindings.Bindings.ToList(),
+                    GameActionBindingsAvailable = gameActionBindings.Available,
+                    GameActionBindingsRaw = gameActionBindings.Entries.ToList()
+                }, options));
+            // NOTE: does not set _gameActionBindingsReady. A successful write
+            // here (e.g. from startup SaveSnapshots()) is not proof the
+            // player's saved binding was loaded -- see the block comment above.
+        }
+
+        // Read-only readiness retry, gated on the one condition with
+        // real-hardware confirmation: FieldDashPatch.IsExplorationActive.
+        // GetConfigGamePad is not even called while inactive. Frame-gated
+        // once active, to avoid calling the native getter 34x every frame;
+        // stops permanently after the first fully successful sweep taken
+        // while exploring.
+        internal static void RetryGameActionBindingsIfNeeded()
+        {
+            if (_gameActionBindingsReady)
+            {
+                return;
+            }
+
+            if (!FieldDashPatch.IsExplorationActive)
+            {
+                return;
+            }
+
+            _gameActionBindingsRetryFrame++;
+            if (_gameActionBindingsRetryFrame % GameActionBindingsRetryIntervalFrames != 0)
+            {
+                return;
+            }
+
+            GameActionBindingSnapshotResult gameActionBindings = CaptureGameActionBindingsRaw();
+            int failed = GameActionBindingSnapshotReader.SlotCount - gameActionBindings.Entries.Count;
+            if (!gameActionBindings.Available || failed > 0)
+            {
+                MelonLoader.MelonLogger.Msg(
+                    $"[GameActionBindingSnapshot] GAME binding state not ready yet after " +
+                    $"exploration became active ({failed}/{GameActionBindingSnapshotReader.SlotCount} failed)");
+                return;
+            }
+
+            _gameActionBindingsReady = true;
+            MelonLoader.MelonLogger.Msg(
+                $"[GameActionBindingSnapshot] GAME binding state ready after exploration " +
+                $"became active ({gameActionBindings.Entries.Count}/{GameActionBindingSnapshotReader.SlotCount}); " +
+                "snapshot refreshed");
+
+            string directory = ModDirectory;
+            Directory.CreateDirectory(directory);
+            var options = new JsonSerializerOptions { WriteIndented = true };
+            WriteRegistrySnapshot(options, gameActionBindings);
+        }
+
+        private static GameBindingSnapshotResult CaptureGameBindings() =>
+            GameBindingSnapshotReader.Capture((controllerId, keyId) =>
+            {
+                InputAssign inputAssign = InputAssign.Instance;
+                if (inputAssign == null)
+                {
+                    throw new InvalidOperationException("InputAssign.Instance is unavailable.");
+                }
+                return inputAssign.GetAssignCode(
+                    (InputAssign.ControllerID)controllerId,
+                    (InputAssign.KeyID)keyId).ToString();
+            });
+
+        // GAME binding SSoT candidate (confirmed 2026-09-21, SESSION_RESUME_NOTES.md
+        // §17-21; 13 indices independently A/B/A-confirmed as of this writing,
+        // see investigations/GAMEBINDING_INDEX_MAP_20260921.md). Distinct read
+        // path from CaptureGameBindings/GetAssignCode above; kept separate
+        // rather than replacing it, since the majority of the 34 index slots
+        // still have no confirmed semantic mapping.
+        private static GameActionBindingSnapshotResult CaptureGameActionBindingsRaw() =>
+            GameActionBindingSnapshotReader.Capture(dds3ConfigGamePadSteam.GetConfigGamePad);
 
         internal static void SaveFeatureSnapshot()
         {

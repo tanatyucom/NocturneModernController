@@ -66,6 +66,7 @@ internal static class Program
         VerifyOverridePersistence();
         VerifyBindingEdits();
         VerifyConflictDiagnostics();
+        VerifyGameBindingSnapshot();
     }
 
     private static DefaultBindingCandidate Candidate(int context, string actionId, params int[] buttons) =>
@@ -331,6 +332,42 @@ internal static class Program
         {
             throw new InvalidOperationException(message + Environment.NewLine + actual);
         }
+    }
+
+    private static void VerifyGameBindingSnapshot()
+    {
+        GameBindingSnapshotResult success = GameBindingSnapshotReader.Capture(
+            (controller, key) => controller + ":" + key);
+        Equal("True", success.Available.ToString(), "native snapshot must report success");
+        Equal("16", success.Bindings.Count.ToString(), "only confirmed physical KeyIDs must be read");
+        Equal("True", success.Bindings.All(binding => binding.ReadOnly).ToString(), "GAME bindings must be read-only");
+        Equal("A", success.Bindings[0].KeyId, "snapshot must retain physical KeyID");
+        var payload = new ActionRegistrySnapshot<string>
+        {
+            Actions = new List<string> { "mod.action" },
+            GameBindingsAvailable = success.Available,
+            GameBindings = success.Bindings.ToList()
+        };
+        ActionRegistrySnapshot<string>? roundTrip =
+            JsonSerializer.Deserialize<ActionRegistrySnapshot<string>>(
+                JsonSerializer.Serialize(payload));
+        Equal("True", (roundTrip?.GameBindingsAvailable ?? false).ToString(), "payload must retain GAME availability");
+        Equal("16", (roundTrip?.GameBindings.Count ?? 0).ToString(), "payload must retain GAME bindings");
+        string gameText = BindingStatusFormatter.Format(new BindingStatusItem
+        {
+            DisplayName = "A [GAME]",
+            Context = "PAD1",
+            Status = "Read-only",
+            CurrentBinding = success.Bindings[0].CurrentButton
+        });
+        TextContains(gameText, "A [GAME]", "GAME entry must be visibly identified");
+        TextContains(gameText, "Status: Read-only", "GAME entry must be visibly read-only");
+        TextContains(gameText, "Current: 0:0", "GAME current assignment must be visible");
+
+        GameBindingSnapshotResult failure = GameBindingSnapshotReader.Capture(
+            (_, _) => throw new InvalidOperationException("native unavailable"));
+        Equal("False", failure.Available.ToString(), "native failure must become unavailable");
+        Equal("0", failure.Bindings.Count.ToString(), "native failure must not expose a partial snapshot");
     }
 
     private sealed class TestBinding
