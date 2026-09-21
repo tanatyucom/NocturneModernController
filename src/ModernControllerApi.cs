@@ -519,7 +519,7 @@ namespace NocturneModernController
             });
 
         // GAME binding SSoT candidate (confirmed 2026-09-21, SESSION_RESUME_NOTES.md
-        // §17-21; 13 indices independently A/B/A-confirmed as of this writing,
+        // §17-23; 15 indices independently A/B/A-confirmed as of this writing,
         // see investigations/GAMEBINDING_INDEX_MAP_20260921.md). Distinct read
         // path from CaptureGameBindings/GetAssignCode above; kept separate
         // rather than replacing it, since the majority of the 34 index slots

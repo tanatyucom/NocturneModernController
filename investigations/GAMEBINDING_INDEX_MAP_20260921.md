@@ -403,4 +403,182 @@ index=17: 25 → 16   (スキルヘルプON/OFF: SELECT→RT)
 A=10, B=9, Y=11, X=12, LB=13, LT=14, RB=15, RT=16, L3=17, SELECT=25, START=26
 ```
 
-**現在ステータス**: 13件CONFIRMED、1件STRONGLY SUPPORTED（宿題）。次のバッチ候補は未着手。
+**現在ステータス**: 13件CONFIRMED、1件STRONGLY SUPPORTED（宿題）。
+
+## 構造仮説: GetConfigGamePad index = 純正UI「GAMEPAD」タブの表示順（2026-09-21）
+
+**仮説**: `GetConfigGamePad`のindex 0..30は、純正Controller Key Config画面「GAMEPAD」タブに表示される項目の並び順と1:1で一致する（`COMMON`→`FIELD/DUNGEON`→`BATTLE`→`EVENT`→`PUZZLE`→`WARP FIELD`の表示順、`GAMEPAD_UI_ACTION_LIST_20260921.md`参照）。index 31-33は画面外（未使用/予約の可能性、UNRESOLVED）。
+
+**検証**: CONFIRMED済み13件全てのindexを、この表示順仮説から予測される位置と機械的に突き合わせた結果、**13件全て完全一致**（不一致0件）。
+
+| index | 推定GAME Action | context | 状態 |
+|---:|---|---|---|
+| 0 | キャラ/カーソル移動（前） | COMMON | STRONGLY SUPPORTED（構造仮説） |
+| 1 | キャラ/カーソル移動（後） | COMMON | STRONGLY SUPPORTED（構造仮説） |
+| 2 | キャラ/カーソル移動（左） | COMMON | STRONGLY SUPPORTED（構造仮説） |
+| 3 | キャラ/カーソル移動（右） | COMMON | STRONGLY SUPPORTED（構造仮説） |
+| 4 | 決定・アクション | COMMON | **CONFIRMED** |
+| 5 | キャンセル | COMMON | **CONFIRMED** |
+| 6 | UI表示ON/OFF | COMMON | **CONFIRMED** |
+| 7 | コマンドメニュー | FIELD/DUNGEON | **CONFIRMED** |
+| 8 | 視点変更（上） | FIELD/DUNGEON | STRONGLY SUPPORTED（構造仮説、グレーアウト項目） |
+| 9 | 視点変更（下） | FIELD/DUNGEON | STRONGLY SUPPORTED（構造仮説、グレーアウト項目） |
+| 10 | 視点変更（左） | FIELD/DUNGEON | STRONGLY SUPPORTED（構造仮説、グレーアウト項目） |
+| 11 | 視点変更（右） | FIELD/DUNGEON | STRONGLY SUPPORTED（構造仮説、グレーアウト項目） |
+| 12 | 視点変更（左回転） | FIELD/DUNGEON | **CONFIRMED** |
+| 13 | 視点変更（右回転） | FIELD/DUNGEON | **CONFIRMED** |
+| 14 | 視点を正面に戻す | FIELD/DUNGEON | **CONFIRMED** |
+| 15 | 客観/主観切替 | FIELD/DUNGEON | STRONGLY SUPPORTED（構造仮説、未A/B） |
+| 16 | オートマップ表示 | FIELD/DUNGEON | **CONFIRMED** |
+| 17 | スキルヘルプON/OFF | BATTLE | **CONFIRMED** |
+| 18 | オートバトル | BATTLE | **CONFIRMED** |
+| 19 | 次に回す | BATTLE | **CONFIRMED** |
+| 20 | テキストの早送り | EVENT | **CONFIRMED** |
+| 21 | マップ回転(左) | PUZZLE | STRONGLY SUPPORTED（構造仮説、未到達） |
+| 22 | マップ回転(右) | PUZZLE | STRONGLY SUPPORTED（構造仮説、未到達） |
+| 23 | メニュー | PUZZLE | **CONFIRMED** |
+| 24 | スクロール切替 | PUZZLE | STRONGLY SUPPORTED（構造仮説+消去法の二重根拠、未到達） |
+| 25 | 視点切替 | PUZZLE | STRONGLY SUPPORTED（構造仮説、未到達） |
+| 26 | 移動（前） | WARP FIELD | STRONGLY SUPPORTED（構造仮説、未A/B） |
+| 27 | 移動（後） | WARP FIELD | STRONGLY SUPPORTED（構造仮説、未A/B） |
+| 28 | 移動（左） | WARP FIELD | STRONGLY SUPPORTED（構造仮説、未A/B） |
+| 29 | 移動（右） | WARP FIELD | STRONGLY SUPPORTED（構造仮説、未A/B） |
+| 30 | パンチ | WARP FIELD | STRONGLY SUPPORTED（構造仮説、未A/B） |
+| 31-33 | 画面外/未使用の可能性 | - | UNRESOLVED（raw値は常に0、既存observation） |
+
+**評価**: 13/13の完全一致は、単なる偶然（ランダムな34スロット配置で13件が構造仮説の予測位置と全て一致する確率は極めて低い）ではなく、強い構造的裏付けと判断する。ただし、これらは「UI表示順から推定」であり、個別のA/B/A実測ではないため、**構造仮説由来の項目はあくまでSTRONGLY SUPPORTEDに留め、CONFIRMEDへは格上げしない**。
+
+## 調査中: #7 スポットチェック index=15「客観/主観切替」
+
+baseline: バッチ2 A/B/A完了時点（`Latest.log` 875〜909行、`22:25:49.404`）の34件をそのまま流用。
+
+| Action | context | 現在 | 変更先 |
+|---|---|---|---|
+| 客観/主観切替 | FIELD/DUNGEON | R3 | X（FIELD/DUNGEON内で未使用、START等の同context衝突回避） |
+
+### A/B結果
+
+ソース: `Latest.log` 825〜859行、`22:41:02.599`〜`22:41:02.703`（`GameBindingProbe`出力、exploration active後）。
+
+機械的diffの結果、**index=15のみ**変化:
+
+```
+index=15: baseline(客観/主観切替=R3) raw=18 → after(客観/主観切替=X) raw=12
+```
+
+他33件は完全一致（diff=0）。構造仮説の予測（index=15=客観/主観切替）と一致。
+
+**新規raw値**: `R3=18`（今回の観察のみ）。
+
+**判定**: STRONGLY SUPPORTED。CONFIRMEDへ格上げにはA/B/A（R3へ戻して再確認）が必要（未実施）。
+
+### A/B/A結果 — CONFIRMED
+
+ソース: `Latest.log` 895〜929行、`22:42:52.163`〜`22:42:52.266`（`GameBindingProbe`出力、exploration active後）。客観/主観切替を元のR3へ戻し、ゲーム完全終了→再起動→exploration active到達後の測定。
+
+| index | baseline(R3, 1回目) | X | R3(A/B/A, 2回目) |
+|---|---|---|---|
+| 0-14, 16-33 | 不変 | 不変 | 不変 |
+| **15** | **18** | **12** | **18** |
+
+index=15以外の33件は3回の測定を通じて完全に不変。
+
+**判定: CONFIRMED**
+
+`index=15` は「客観/主観切替」（FIELD/DUNGEON）actionに対応する。raw値: `18=R3, 12=X`。
+
+**構造仮説アンカー更新**: COMMON(4-6)→FIELD/DUNGEON(7)→視点系(12-14)→**客観/主観切替(15)**→オートマップ表示(16)→BATTLE(17-19)→EVENT(20)→PUZZLE(23)まで、中盤の連続区間で仮説と完全一致するアンカーが得られた。次は末尾のWARP FIELD「パンチ」(index=30)でスポットチェック予定（到達可能性はユーザー確認待ち）。
+
+## 対応表サマリ（2026-09-21時点、最終・CONFIRMEDのみ・14件）
+
+| index | GAME Action(画面表示名) | context | raw→物理ボタン |
+|---|---|---|---|
+| 4 | 決定・アクション | COMMON | 10=A, 12=X |
+| 5 | キャンセル | COMMON | 9=B, 16=RT |
+| 6 | UI表示ON/OFF | COMMON | 17=L3, 26=START |
+| 7 | コマンドメニュー | FIELD/DUNGEON | 11=Y, 12=X |
+| 12 | 視点変更（左回転） | FIELD/DUNGEON | 13=LB, 14=LT |
+| 13 | 視点変更（右回転） | FIELD/DUNGEON | 15=RB, 16=RT |
+| 14 | 視点を正面に戻す | FIELD/DUNGEON | 9=B, 15=RB |
+| 15 | 客観/主観切替 | FIELD/DUNGEON | 18=R3, 12=X |
+| 16 | オートマップ表示 | FIELD/DUNGEON | 26=START, 13=LB |
+| 17 | スキルヘルプON/OFF | BATTLE | 25=SELECT, 16=RT |
+| 18 | オートバトル | BATTLE | 11=Y, 12=X |
+| 19 | 次に回す | BATTLE | 15=RB, 26=START |
+| 20 | テキストの早送り | EVENT | 11=Y, 12=X |
+| 23 | メニュー | PUZZLE | 12=X, 10=A |
+
+**判明したraw値一覧**（indexごとの観察、他indexへの一般化はしない）:
+```
+A=10, B=9, Y=11, X=12, LB=13, LT=14, RB=15, RT=16, L3=17, R3=18, SELECT=25, START=26
+```
+
+**現在ステータス**: 14件CONFIRMED。
+
+## 調査中: #8 スポットチェック index=30「パンチ」(WARP FIELD、末尾アンカー)
+
+baseline: index=15 A/B/A完了時点の34件をそのまま流用。「コンフィグ画面上の変更のみ、実際のWARP FIELDプレイには入らず、通常のフィールド探索状態でread」という条件で実施（GetConfigGamePadはグローバルなconfig配列を読むため、実際のWARP FIELDプレイは不要）。
+
+| Action | context | 現在 | 変更先 |
+|---|---|---|---|
+| パンチ | WARP FIELD | B | X |
+
+### A/B結果
+
+ソース: `Latest.log` 800〜834行、`22:45:24.251`〜`22:45:24.356`（`GameBindingProbe`出力、exploration active後）。
+
+機械的diffの結果、**index=30のみ**変化:
+
+```
+index=30: baseline(パンチ=B) raw=9 → after(パンチ=X) raw=12
+```
+
+他33件は完全一致（diff=0）。構造仮説の予測（index=30=パンチ）と一致。これで末尾のアンカーも的中。
+
+**判定**: STRONGLY SUPPORTED。CONFIRMEDへ格上げにはA/B/A（Bへ戻して再確認）が必要（未実施）。
+
+### A/B/A結果 — CONFIRMED
+
+ソース: `Latest.log` 815〜849行、`22:47:07.607`〜`22:47:07.710`（`GameBindingProbe`出力、exploration active後）。パンチを元のBへ戻し、ゲーム完全終了→再起動→exploration active到達後の測定。
+
+| index | baseline(B, 1回目) | X | B(A/B/A, 2回目) |
+|---|---|---|---|
+| 0-29, 31-33 | 不変 | 不変 | 不変 |
+| **30** | **9** | **12** | **9** |
+
+index=30以外の33件は3回の測定を通じて完全に不変。
+
+**判定: CONFIRMED**
+
+`index=30` は「パンチ」（WARP FIELD）actionに対応する。raw値: `9=B, 12=X`。
+
+**構造仮説の検証完了**: 先頭(index 4-7)、中盤(12-20, 23)、末尾(30)に渡って計15件のアンカーがCONFIRMEDされ、全て仮説の予測位置と一致。「GetConfigGamePad index = 純正UI表示順」構造仮説は広範囲にわたる実測アンカーで強く裏付けられた。
+
+## 対応表サマリ（2026-09-21時点、最終・CONFIRMEDのみ・15件）
+
+| index | GAME Action(画面表示名) | context | raw→物理ボタン |
+|---|---|---|---|
+| 4 | 決定・アクション | COMMON | 10=A, 12=X |
+| 5 | キャンセル | COMMON | 9=B, 16=RT |
+| 6 | UI表示ON/OFF | COMMON | 17=L3, 26=START |
+| 7 | コマンドメニュー | FIELD/DUNGEON | 11=Y, 12=X |
+| 12 | 視点変更（左回転） | FIELD/DUNGEON | 13=LB, 14=LT |
+| 13 | 視点変更（右回転） | FIELD/DUNGEON | 15=RB, 16=RT |
+| 14 | 視点を正面に戻す | FIELD/DUNGEON | 9=B, 15=RB |
+| 15 | 客観/主観切替 | FIELD/DUNGEON | 18=R3, 12=X |
+| 16 | オートマップ表示 | FIELD/DUNGEON | 26=START, 13=LB |
+| 17 | スキルヘルプON/OFF | BATTLE | 25=SELECT, 16=RT |
+| 18 | オートバトル | BATTLE | 11=Y, 12=X |
+| 19 | 次に回す | BATTLE | 15=RB, 26=START |
+| 20 | テキストの早送り | EVENT | 11=Y, 12=X |
+| 23 | メニュー | PUZZLE | 12=X, 10=A |
+| 30 | パンチ | WARP FIELD | 9=B, 12=X |
+
+**判明したraw値一覧**（indexごとの観察、他indexへの一般化はしない）:
+```
+A=10, B=9, Y=11, X=12, LB=13, LT=14, RB=15, RT=16, L3=17, R3=18, SELECT=25, START=26
+```
+
+**STRONGLY SUPPORTED（構造仮説のみ、未A/B/A）**: index 0-3, 8-11, 21-22, 24-29（18件）。index 31-33はUNRESOLVED（raw値常に0）。
+
+**現在ステータス**: 15件CONFIRMED。構造仮説は先頭〜末尾まで広範囲に検証済み。

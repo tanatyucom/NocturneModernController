@@ -109,10 +109,15 @@ namespace NocturneModernController
         // Controller Key Config screen, each independently verified by
         // changing one action, confirming exactly the expected index(es)
         // changed, then reverting and confirming the diff returned to zero.
+        // 15 indices independently A/B/A-confirmed as of this writing.
         // Full evidence trail: investigations/GAMEBINDING_INDEX_MAP_20260921.md,
-        // SESSION_RESUME_NOTES.md §17-21. Do not add further entries without
+        // SESSION_RESUME_NOTES.md §17-23. Do not add further entries without
         // the same independent A/B/A confirmation; do not infer entries from
-        // numeric coincidence between indices.
+        // numeric coincidence between indices. (A structural hypothesis --
+        // that index order mirrors the native GAMEPAD tab's on-screen action
+        // order -- is STRONGLY SUPPORTED by all 15 confirmations landing on
+        // its predicted positions, but is not itself sufficient grounds to
+        // add unconfirmed indices here.)
         private static readonly IReadOnlyDictionary<int, string> ConfirmedActionNames =
             new Dictionary<int, string>
             {
@@ -123,12 +128,14 @@ namespace NocturneModernController
                 [12] = "視点変更（左回転）",
                 [13] = "視点変更（右回転）",
                 [14] = "視点を正面に戻す",
+                [15] = "客観/主観切替",
                 [16] = "オートマップ表示",
                 [17] = "スキルヘルプON/OFF",
                 [18] = "オートバトル",
                 [19] = "次に回す",
                 [20] = "テキストの早送り",
                 [23] = "メニュー",
+                [30] = "パンチ",
             };
 
         // Raw -> physical-button values, confirmed per-index only via the
@@ -146,12 +153,14 @@ namespace NocturneModernController
                 [12] = new Dictionary<int, string> { [13] = "LB", [14] = "LT" },
                 [13] = new Dictionary<int, string> { [15] = "RB", [16] = "RT" },
                 [14] = new Dictionary<int, string> { [9] = "B", [15] = "RB" },
+                [15] = new Dictionary<int, string> { [18] = "R3", [12] = "X" },
                 [16] = new Dictionary<int, string> { [26] = "START", [13] = "LB" },
                 [17] = new Dictionary<int, string> { [25] = "SELECT", [16] = "RT" },
                 [18] = new Dictionary<int, string> { [11] = "Y", [12] = "X" },
                 [19] = new Dictionary<int, string> { [15] = "RB", [26] = "START" },
                 [20] = new Dictionary<int, string> { [11] = "Y", [12] = "X" },
                 [23] = new Dictionary<int, string> { [12] = "X", [10] = "A" },
+                [30] = new Dictionary<int, string> { [9] = "B", [12] = "X" },
             };
 
         internal static GameActionBindingSnapshotResult Capture(Func<int, int> getConfigGamePad)

@@ -392,4 +392,20 @@ core/Settings/Tests、3プロジェクトともclean build 0エラー・0警告�
 
 deploy/commitはまだ実施していない。
 
+## 23. 構造仮説: GetConfigGamePad index = 純正UI表示順（2026-09-21、commit後）
+
+`GetConfigGamePad`のindex 0..30が、純正Controller Key Config「GAMEPAD」タブの表示順（COMMON→FIELD/DUNGEON→BATTLE→EVENT→PUZZLE→WARP FIELD）と1:1対応するという構造仮説を提示。CONFIRMED済み13件全てを機械的に突き合わせた結果、**13/13が仮説の予測位置と完全一致**（不一致0件）。
+
+この仮説に基づくSTRONGLY SUPPORTED（未A/B/A）な残り18スロットの推定表は`investigations/GAMEBINDING_INDEX_MAP_20260921.md`「構造仮説」セクション参照。index=31-33は画面外/未使用の可能性（raw値常に0、UNRESOLVED）。
+
+構造仮説由来の項目はCONFIRMEDへは格上げしない（個別A/B/A実測のみがCONFIRMEDの根拠）。
+
+**`index=15`スポットチェック完了 — CONFIRMED**: 「客観/主観切替」(FIELD/DUNGEON、R3→X→R3)をA/B/Aで確認、他33件不変。構造仮説の中間アンカーとして的中（raw: 18=R3, 12=X、新規判明）。これで14件CONFIRMED。
+
+**`index=30`スポットチェック完了 — CONFIRMED**: 「パンチ」(WARP FIELD、B→X→B)をA/B/Aで確認、他33件不変（設定変更のみで実際のWARP FIELDプレイは不要、通常のフィールド探索状態でread可能なことも確認）。これで15件CONFIRMED、構造仮説は先頭(4-7)・中盤(12-20,23)・末尾(30)に渡って広範囲に裏付けられた。
+
+**CONFIRMED対応表（2026-09-21最終、計15件）**: 上記14件 + `index=30: パンチ(WARP FIELD) raw 9=B, 12=X`。判明raw値一覧（変更なし）: `A=10, B=9, Y=11, X=12, LB=13, LT=14, RB=15, RT=16, L3=17, R3=18, SELECT=25, START=26`。
+
+**STRONGLY SUPPORTED（構造仮説のみ、未A/B/A）**: index 0-3, 8-11, 21-22, 24-29（18件）。index 31-33はUNRESOLVED（raw値常に0）。
+
 index=7,18,20の3件でraw値(11=Y/12=X)が一致しているが、他indexへの一般化・raw value enumの確定は行わない。PUZZLE区分5項目・「視点変更（上/下/左/右）」4項目はA/B対象外（前者はゲーム進行未到達、後者はグレーアウト）。他28 indexは引き続き意味未確定（推測禁止を継続）。Settings UI表示は未着手。
