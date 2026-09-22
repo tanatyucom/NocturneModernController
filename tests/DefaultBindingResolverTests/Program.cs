@@ -67,6 +67,7 @@ internal static class Program
         VerifyBindingEdits();
         VerifyConflictDiagnostics();
         VerifyGameBindingSnapshot();
+        VerifyGameActionBindingDisplay();
     }
 
     private static DefaultBindingCandidate Candidate(int context, string actionId, params int[] buttons) =>
@@ -368,6 +369,45 @@ internal static class Program
             (_, _) => throw new InvalidOperationException("native unavailable"));
         Equal("False", failure.Available.ToString(), "native failure must become unavailable");
         Equal("0", failure.Bindings.Count.ToString(), "native failure must not expose a partial snapshot");
+    }
+
+    private static void VerifyGameActionBindingDisplay()
+    {
+        var entries = new List<GameActionBindingRawEntry>
+        {
+            new() { Index = 5, RawValue = 9, ConfirmedActionName = "キャンセル", ConfirmedPhysicalButton = "B" },
+            new() { Index = 4, RawValue = 10, ConfirmedActionName = "決定・アクション", ConfirmedPhysicalButton = "A" },
+            new() { Index = 24, RawValue = 3, ConfirmedActionName = null, ConfirmedPhysicalButton = null },
+            new() { Index = 7, RawValue = 99, ConfirmedActionName = "コマンドメニュー", ConfirmedPhysicalButton = null }
+        };
+
+        IReadOnlyList<GameActionBindingDisplayRow> rows =
+            GameActionBindingDisplayFormatter.GetConfirmedRows(entries);
+        Equal("2", rows.Count.ToString(), "only fully-confirmed indices must produce a row");
+        Equal("決定・アクション", rows[0].ActionName, "rows must be ordered by index");
+        Equal("A", rows[0].PhysicalButton, "row must carry the confirmed physical button");
+        Equal("キャンセル", rows[1].ActionName, "second confirmed index must follow in order");
+
+        var payload = new ActionRegistrySnapshot<string>
+        {
+            Actions = new List<string> { "mod.action" },
+            GameActionBindingsAvailable = true,
+            GameActionBindingsRaw = entries,
+            GameActionBindingsAuthoritative = true
+        };
+        ActionRegistrySnapshot<string>? roundTrip =
+            JsonSerializer.Deserialize<ActionRegistrySnapshot<string>>(
+                JsonSerializer.Serialize(payload));
+        Equal("True", (roundTrip?.GameActionBindingsAuthoritative ?? false).ToString(),
+            "authoritative flag must round-trip through JSON");
+
+        var nonAuthoritative = new ActionRegistrySnapshot<string>
+        {
+            GameActionBindingsAvailable = true,
+            GameActionBindingsAuthoritative = false
+        };
+        Equal("False", nonAuthoritative.GameActionBindingsAuthoritative.ToString(),
+            "Available alone must not imply authoritative");
     }
 
     private sealed class TestBinding

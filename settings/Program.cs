@@ -125,6 +125,8 @@ internal sealed class SettingsForm : Form
     private readonly List<ActionDefinition> _actions;
     private readonly List<GameBindingSnapshotEntry> _gameBindings;
     private readonly bool _gameBindingsAvailable;
+    private readonly IReadOnlyList<GameActionBindingDisplayRow> _gameActionBindingRows;
+    private readonly bool _gameActionBindingsAvailable;
     private readonly List<BindingEntry> _bindings;
     private readonly List<BindingOverrideEntry> _bindingOverrides;
     private readonly List<SavedBindingConflict<BindingEntry>> _savedBindingConflicts;
@@ -157,6 +159,11 @@ internal sealed class SettingsForm : Form
         _actions = actionSnapshot.Actions;
         _gameBindings = actionSnapshot.GameBindings;
         _gameBindingsAvailable = actionSnapshot.GameBindingsAvailable;
+        _gameActionBindingsAvailable = actionSnapshot.GameActionBindingsAvailable &&
+            actionSnapshot.GameActionBindingsAuthoritative;
+        _gameActionBindingRows = _gameActionBindingsAvailable
+            ? GameActionBindingDisplayFormatter.GetConfirmedRows(actionSnapshot.GameActionBindingsRaw)
+            : Array.Empty<GameActionBindingDisplayRow>();
         BindingLoadResult<BindingEntry> loadedBindings = ReadBindings(bindingsPath);
         _bindings = loadedBindings.Bindings;
         _bindingOverrides = loadedBindings.Overrides;
@@ -180,6 +187,7 @@ internal sealed class SettingsForm : Form
 
         var tabs = new TabControl { Dock = DockStyle.Fill };
         tabs.TabPages.Add(BuildBindingsPage());
+        tabs.TabPages.Add(BuildGameBindingsPage());
         tabs.TabPages.Add(BuildCameraPage());
         tabs.TabPages.Add(BuildAutoBattlePage());
         tabs.TabPages.Add(BuildFeaturesPage());
@@ -260,6 +268,75 @@ internal sealed class SettingsForm : Form
         AddPadButton(ControllerButton.A, 629, 268, 58, 46);
         AddPadButton(ControllerButton.Select, 374, 190, 70, 34);
         AddPadButton(ControllerButton.Start, 451, 190, 70, 34);
+        return page;
+    }
+
+    private TabPage BuildGameBindingsPage()
+    {
+        var page = NewPage(L("GAMEキーコンフィグ（参照専用）", "GAME Bindings (Read-only)"));
+        if (!_gameActionBindingsAvailable)
+        {
+            page.Controls.Add(new Label
+            {
+                Text = L(
+                    "ネイティブGAME設定をまだ取得できていません。ゲームを起動し、一度フィールドへ入ってください。",
+                    "Native GAME bindings are not available yet. Start/load the game and enter the field once."),
+                Location = new Point(22, 18),
+                Size = new Size(880, 40),
+                ForeColor = Color.Gainsboro
+            });
+            return page;
+        }
+
+        page.Controls.Add(new Label
+        {
+            Text = L(
+                "ゲーム本体のキーコンフィグです。参照専用で、ここから変更はできません。",
+                "These are the game's own native bindings. They are read-only and cannot be changed here."),
+            Location = new Point(22, 18),
+            AutoSize = true,
+            ForeColor = Color.Gainsboro
+        });
+
+        var list = new FlowLayoutPanel
+        {
+            Location = new Point(22, 54),
+            Size = new Size(890, 550),
+            AutoScroll = true,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            BackColor = page.BackColor
+        };
+        foreach (GameActionBindingDisplayRow row in _gameActionBindingRows)
+        {
+            var line = new TableLayoutPanel { Width = 850, Height = 28, ColumnCount = 2 };
+            line.Controls.Add(new Label
+            {
+                Text = row.ActionName,
+                AutoSize = true,
+                ForeColor = Color.WhiteSmoke,
+                Anchor = AnchorStyles.Left
+            }, 0, 0);
+            line.Controls.Add(new Label
+            {
+                Text = row.PhysicalButton,
+                AutoSize = true,
+                ForeColor = Color.FromArgb(74, 204, 188),
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(30, 3, 3, 3)
+            }, 1, 0);
+            list.Controls.Add(line);
+        }
+        if (_gameActionBindingRows.Count == 0)
+        {
+            list.Controls.Add(new Label
+            {
+                Text = L("表示できる確定済みの設定がありません。", "No confirmed bindings to display."),
+                AutoSize = true,
+                ForeColor = Color.Gainsboro
+            });
+        }
+        page.Controls.Add(list);
         return page;
     }
 

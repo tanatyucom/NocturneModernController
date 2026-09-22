@@ -452,7 +452,8 @@ namespace NocturneModernController
                     GameBindingsAvailable = gameBindings.Available,
                     GameBindings = gameBindings.Bindings.ToList(),
                     GameActionBindingsAvailable = gameActionBindings.Available,
-                    GameActionBindingsRaw = gameActionBindings.Entries.ToList()
+                    GameActionBindingsRaw = gameActionBindings.Entries.ToList(),
+                    GameActionBindingsAuthoritative = gameActionBindingsOverride != null
                 }, options));
             // NOTE: does not set _gameActionBindingsReady. A successful write
             // here (e.g. from startup SaveSnapshots()) is not proof the

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace NocturneModernController
 {
@@ -11,6 +12,14 @@ namespace NocturneModernController
         public List<GameBindingSnapshotEntry> GameBindings { get; set; } = new();
         public bool GameActionBindingsAvailable { get; set; }
         public List<GameActionBindingRawEntry> GameActionBindingsRaw { get; set; } = new();
+
+        // True only for a snapshot captured after FieldDashPatch.IsExplorationActive
+        // (see GameActionBindingSnapshotReader below). GameActionBindingsAvailable
+        // alone just means the native getter did not throw -- it is also true for
+        // a pre-exploration startup sweep, which real-hardware evidence showed can
+        // return stale/default values. Readers must require both flags before
+        // treating GameActionBindingsRaw as the player's current GAME binding.
+        public bool GameActionBindingsAuthoritative { get; set; }
     }
 
     internal sealed class GameBindingSnapshotEntry
@@ -201,5 +210,24 @@ namespace NocturneModernController
                 Entries = entries
             };
         }
+    }
+
+    internal sealed record GameActionBindingDisplayRow(string ActionName, string PhysicalButton);
+
+    // Settings-UI display filter: only indices independently A/B/A-confirmed for
+    // both the action name and the physical button resolve to a row here. An
+    // unconfirmed or partially-confirmed index (e.g. a raw value not seen during
+    // A/B/A testing) is intentionally omitted rather than shown ambiguously.
+    internal static class GameActionBindingDisplayFormatter
+    {
+        internal static IReadOnlyList<GameActionBindingDisplayRow> GetConfirmedRows(
+            IEnumerable<GameActionBindingRawEntry> entries) =>
+            entries
+                .Where(entry => entry.ConfirmedActionName != null && entry.ConfirmedPhysicalButton != null)
+                .OrderBy(entry => entry.Index)
+                .Select(entry => new GameActionBindingDisplayRow(
+                    entry.ConfirmedActionName!,
+                    entry.ConfirmedPhysicalButton!))
+                .ToArray();
     }
 }
