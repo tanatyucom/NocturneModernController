@@ -9,6 +9,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows.Forms;
+using NocturneModernController;
 
 internal enum RightStickMode { FullCamera, HorizontalTurn }
 internal enum AutoBattleMode { NormalAttackOnly, SkillPriority }
@@ -42,6 +43,13 @@ internal sealed class ActionDefinition
     public string Description { get; set; } = string.Empty;
     public ControllerContext Contexts { get; set; }
     public ControllerActionBehavior Behavior { get; set; }
+    public List<DefaultBindingDefinition> DefaultBindings { get; set; } = new();
+}
+
+internal sealed class DefaultBindingDefinition
+{
+    public ControllerContext Context { get; set; }
+    public List<ControllerButton> Buttons { get; set; } = new();
 }
 
 internal sealed class BindingEntry
@@ -49,6 +57,7 @@ internal sealed class BindingEntry
     public ControllerContext Context { get; set; }
     public List<ControllerButton> Buttons { get; set; } = new();
     public string ActionId { get; set; } = string.Empty;
+    public string Source { get; set; } = "User";
 }
 
 internal sealed class FeatureMetadata
@@ -103,7 +112,9 @@ internal static class Program
         string features = args.Length > 3 ? args[3] : Path.Combine(Path.GetDirectoryName(settings) ?? string.Empty, "NocturneModernController.features.json");
         string featureRequests = args.Length > 4 ? args[4] : Path.Combine(Path.GetDirectoryName(settings) ?? string.Empty, "NocturneModernController.feature-requests.json");
         int gamePid = args.Length > 5 && int.TryParse(args[5], out int parsedPid) ? parsedPid : 0;
-        Application.Run(new SettingsForm(settings, registry, bindings, features, featureRequests, gamePid));
+        string gameBindingRequest = args.Length > 6 ? args[6] : Path.Combine(Path.GetDirectoryName(settings) ?? string.Empty, "NocturneModernController.game-binding-request.json");
+        string gameBindingResult = args.Length > 7 ? args[7] : Path.Combine(Path.GetDirectoryName(settings) ?? string.Empty, "NocturneModernController.game-binding-result.json");
+        Application.Run(new SettingsForm(settings, registry, bindings, features, featureRequests, gamePid, gameBindingRequest, gameBindingResult));
     }
 }
 
@@ -114,7 +125,23 @@ internal sealed class SettingsForm : Form
     private readonly string _featureRequestsPath;
     private readonly int _gamePid;
     private readonly List<ActionDefinition> _actions;
+    private readonly List<GameBindingSnapshotEntry> _gameBindings;
+    private readonly bool _gameBindingsAvailable;
+    private readonly GameBindingEditModel _gameBindingEdit;
+    private readonly string _gameBindingRequestPath;
+    private readonly string? _gameBindingLastResult;
+    private readonly bool _gameBindingLastResultOk;
+    private readonly Dictionary<int, ComboBox> _gameBindingSelectors = new();
+    private readonly Label _gameBindingStatus = new Label { AutoSize = false, Size = new Size(640, 44), ForeColor = Color.Gainsboro };
+    private readonly Button _gameBindingApply = new Button { Size = new Size(105, 32), BackColor = Color.FromArgb(74, 204, 188) };
+    private readonly Button _gameBindingCancel = new Button { Size = new Size(105, 32) };
+    private bool _gameBindingRequestQueued;
+    private bool _gameBindingSelectorsResetting;
+    private bool _savedAndClosing;
     private readonly List<BindingEntry> _bindings;
+    private readonly List<BindingOverrideEntry> _bindingOverrides;
+    private readonly List<SavedBindingConflict<BindingEntry>> _savedBindingConflicts;
+    private readonly bool _bindingsLoadedFromLegacy;
     private readonly List<FeatureProviderMetadata> _featureProviders;
     private readonly Dictionary<CheckBox, (string ProviderId, string FeatureId, bool Initial)> _featureToggles = new();
     private readonly Dictionary<ComboBox, (string ProviderId, string FeatureId, string Initial)> _featureValueSelectors = new();
@@ -133,20 +160,42 @@ internal sealed class SettingsForm : Form
     private readonly ComboBox _uiLanguage = NewCombo();
     private readonly bool _japanese;
 
-    internal SettingsForm(string settingsPath, string registryPath, string bindingsPath, string featuresPath, string featureRequestsPath, int gamePid)
+    internal SettingsForm(string settingsPath, string registryPath, string bindingsPath, string featuresPath, string featureRequestsPath, int gamePid,
+        string gameBindingRequestPath, string gameBindingResultPath)
     {
         _settingsPath = settingsPath;
         _bindingsPath = bindingsPath;
         _featureRequestsPath = featureRequestsPath;
         _gamePid = gamePid;
-        _actions = Read<List<ActionDefinition>>(registryPath) ?? new List<ActionDefinition>();
-        _bindings = Read<List<BindingEntry>>(bindingsPath) ?? new List<BindingEntry>();
+        ActionRegistrySnapshot<ActionDefinition> actionSnapshot = ReadActionSnapshot(registryPath);
+        _actions = actionSnapshot.Actions;
+        _gameBindings = actionSnapshot.GameBindings;
+        _gameBindingsAvailable = actionSnapshot.GameBindingsAvailable;
+        _gameBindingEdit = new GameBindingEditModel(
+            actionSnapshot.GameActionBindingsRaw,
+            actionSnapshot.GameActionBindingsAvailable && actionSnapshot.GameActionBindingsAuthoritative);
+        _gameBindingRequestPath = gameBindingRequestPath;
+        // A request left from an earlier session was never confirmed by OK / Save
+        // in this one; never let it apply later.
+        TryDeleteFile(_gameBindingRequestPath);
+        BindingLoadResult<BindingEntry> loadedBindings = ReadBindings(bindingsPath);
+        _bindings = loadedBindings.Bindings;
+        _bindingOverrides = loadedBindings.Overrides;
+        _savedBindingConflicts = loadedBindings.SavedConflicts;
+        _bindingsLoadedFromLegacy = loadedBindings.IsLegacy;
         _featureProviders = Read<List<FeatureProviderMetadata>>(featuresPath) ?? new List<FeatureProviderMetadata>();
         SettingsModel initialSettings = Read<SettingsModel>(_settingsPath) ?? new SettingsModel();
         _japanese = initialSettings.UiLanguage.Equals("Japanese", StringComparison.OrdinalIgnoreCase) ||
             (initialSettings.UiLanguage.Equals("Auto", StringComparison.OrdinalIgnoreCase) &&
              CultureInfo.CurrentUICulture.TwoLetterISOLanguageName.Equals("ja", StringComparison.OrdinalIgnoreCase));
         _padPanel.Japanese = _japanese;
+        GameBindingWriteResult? lastResult = GameBindingResultFile.Consume(gameBindingResultPath);
+        if (lastResult != null)
+        {
+            _gameBindingLastResult = GameBindingResultMessages.Describe(lastResult, _japanese);
+            _gameBindingLastResultOk = lastResult.Status == GameBindingWriteStatus.Success ||
+                lastResult.Status == GameBindingWriteStatus.Validated;
+        }
 
         Text = L("Nocturne Modern Controller - 統合キーコンフィグ", "Nocturne Modern Controller - Settings");
         ClientSize = new Size(940, 650);
@@ -159,6 +208,7 @@ internal sealed class SettingsForm : Form
 
         var tabs = new TabControl { Dock = DockStyle.Fill };
         tabs.TabPages.Add(BuildBindingsPage());
+        tabs.TabPages.Add(BuildGameBindingsPage());
         tabs.TabPages.Add(BuildCameraPage());
         tabs.TabPages.Add(BuildAutoBattlePage());
         tabs.TabPages.Add(BuildFeaturesPage());
@@ -169,6 +219,14 @@ internal sealed class SettingsForm : Form
         RefreshPadLabels();
         Shown += (_, _) => SetGameWindowState(minimize: true);
         FormClosed += (_, _) => SetGameWindowState(minimize: false);
+        FormClosing += (_, _) =>
+        {
+            // Only OK / Save hands a queued GAME binding request to the game.
+            if (_gameBindingRequestQueued && !_savedAndClosing)
+            {
+                TryDeleteFile(_gameBindingRequestPath);
+            }
+        };
     }
 
     private TabPage BuildBindingsPage()
@@ -194,6 +252,30 @@ internal sealed class SettingsForm : Form
         _context.Width = 180;
         _context.SelectedIndexChanged += (_, _) => RefreshPadLabels();
         page.Controls.Add(_context);
+        var resetContext = new Button
+        {
+            Text = L("この場面をリセット", "Reset Context"),
+            Location = new Point(215, 48),
+            Size = new Size(150, 32)
+        };
+        var resetAll = new Button
+        {
+            Text = L("すべてリセット", "Reset All"),
+            Location = new Point(375, 48),
+            Size = new Size(135, 32)
+        };
+        var status = new Button
+        {
+            Text = L("割当状態", "Binding Status"),
+            Location = new Point(520, 48),
+            Size = new Size(135, 32)
+        };
+        resetContext.Click += (_, _) => ResetCurrentContext();
+        resetAll.Click += (_, _) => ResetAllBindings();
+        status.Click += (_, _) => ShowBindingStatus();
+        page.Controls.Add(resetContext);
+        page.Controls.Add(resetAll);
+        page.Controls.Add(status);
 
         _padPanel.Location = new Point(22, 90);
         _padPanel.Size = new Size(850, 450);
@@ -216,6 +298,222 @@ internal sealed class SettingsForm : Form
         AddPadButton(ControllerButton.Select, 374, 190, 70, 34);
         AddPadButton(ControllerButton.Start, 451, 190, 70, 34);
         return page;
+    }
+
+    private TabPage BuildGameBindingsPage()
+    {
+        var page = NewPage(L("GAMEキーコンフィグ", "GAME Bindings"));
+        int top = 18;
+        if (_gameBindingLastResult != null)
+        {
+            page.Controls.Add(new Label
+            {
+                Text = L("前回の変更: ", "Last change: ") + _gameBindingLastResult,
+                Location = new Point(22, top),
+                Size = new Size(880, 40),
+                ForeColor = _gameBindingLastResultOk ? Color.FromArgb(74, 204, 188) : Color.FromArgb(240, 170, 90)
+            });
+            top += 44;
+        }
+
+        if (!_gameBindingEdit.Authoritative)
+        {
+            page.Controls.Add(new Label
+            {
+                Text = L(
+                    "ゲームの現在の設定をまだ取得できていません。ゲーム内でフィールドへ移動してから、Settingsを開き直してください。",
+                    "The game's current bindings are not available yet. Move to the field in game, then reopen Settings."),
+                Location = new Point(22, top),
+                Size = new Size(880, 40),
+                ForeColor = Color.Gainsboro
+            });
+            return page;
+        }
+
+        page.Controls.Add(new Label
+        {
+            Text = L(
+                "ゲーム本体のキーコンフィグです。1回の適用で変更できるのは1項目です。適用後、「OK / 保存」で閉じるとゲームに反映されます。",
+                "The game's own key config. One action can be changed per apply; it takes effect when you close with OK / Save."),
+            Location = new Point(22, top),
+            Size = new Size(880, 40),
+            ForeColor = Color.Gainsboro
+        });
+        top += 44;
+
+        var grid = new TableLayoutPanel
+        {
+            Location = new Point(22, top),
+            Size = new Size(760, 400),
+            AutoScroll = true,
+            ColumnCount = 3,
+            BackColor = page.BackColor
+        };
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300));
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 200));
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
+        AddGameBindingHeader(grid, L("項目", "Action"), 0);
+        AddGameBindingHeader(grid, L("現在", "Current"), 1);
+        AddGameBindingHeader(grid, L("変更後", "New"), 2);
+
+        int rowIndex = 1;
+        foreach (GameActionBindingDisplayRow row in _gameBindingEdit.Rows)
+        {
+            grid.Controls.Add(new Label { Text = row.ActionName, AutoSize = true, ForeColor = Color.WhiteSmoke, Anchor = AnchorStyles.Left }, 0, rowIndex);
+            grid.Controls.Add(new Label
+            {
+                Text = row.CurrentButton,
+                AutoSize = true,
+                ForeColor = row.CurrentSupported ? Color.FromArgb(74, 204, 188) : Color.FromArgb(240, 170, 90),
+                Anchor = AnchorStyles.Left
+            }, 1, rowIndex);
+
+            var selector = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, Anchor = AnchorStyles.Left };
+            foreach ((int raw, string name) in GameBindingEditModel.Options)
+            {
+                selector.Items.Add(new GameButtonOption(raw, name));
+            }
+            if (row.CurrentSupported)
+            {
+                selector.SelectedIndex = IndexOfOption(row.CurrentRaw);
+            }
+            selector.Enabled = _gameBindingEdit.IsEditable(row.Index);
+            int actionIndex = row.Index;
+            selector.SelectedIndexChanged += (_, _) =>
+            {
+                if (!_gameBindingSelectorsResetting && selector.SelectedItem is GameButtonOption option)
+                {
+                    _gameBindingEdit.SetSelection(actionIndex, option.Raw);
+                    RefreshGameBindingControls();
+                }
+            };
+            _gameBindingSelectors[row.Index] = selector;
+            grid.Controls.Add(selector, 2, rowIndex);
+            rowIndex++;
+        }
+        if (_gameBindingEdit.Rows.Count == 0)
+        {
+            grid.Controls.Add(new Label { Text = L("表示できる項目がありません。", "No actions to display."), AutoSize = true, ForeColor = Color.Gainsboro }, 0, 1);
+        }
+        page.Controls.Add(grid);
+
+        _gameBindingStatus.Location = new Point(22, top + 408);
+        _gameBindingApply.Text = L("適用", "Apply");
+        _gameBindingApply.Location = new Point(680, top + 410);
+        _gameBindingCancel.Text = L("取り消し", "Undo");
+        _gameBindingCancel.Location = new Point(795, top + 410);
+        _gameBindingApply.Click += (_, _) => QueueGameBindingRequest();
+        _gameBindingCancel.Click += (_, _) => CancelGameBindingEdit();
+        page.Controls.Add(_gameBindingStatus);
+        page.Controls.Add(_gameBindingApply);
+        page.Controls.Add(_gameBindingCancel);
+        RefreshGameBindingControls();
+        return page;
+    }
+
+    private static void AddGameBindingHeader(TableLayoutPanel grid, string text, int column) =>
+        grid.Controls.Add(new Label { Text = text, AutoSize = true, ForeColor = Color.Silver, Anchor = AnchorStyles.Left }, column, 0);
+
+    private static int IndexOfOption(int raw)
+    {
+        for (int i = 0; i < GameBindingEditModel.Options.Count; i++)
+        {
+            if (GameBindingEditModel.Options[i].Raw == raw)
+            {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private void RefreshGameBindingControls()
+    {
+        if (_gameBindingRequestQueued)
+        {
+            _gameBindingStatus.Text = L(
+                "変更を予約しました。「OK / 保存」で閉じるとゲームに反映され、結果は次にSettingsを開いたときに表示されます。「取り消し」で予約を取り消せます。",
+                "Change queued. Close with OK / Save to apply it in game; the result is shown next time Settings opens. Undo cancels the queued change.");
+            _gameBindingApply.Enabled = false;
+            _gameBindingCancel.Enabled = true;
+            foreach (ComboBox selector in _gameBindingSelectors.Values)
+            {
+                selector.Enabled = false;
+            }
+            return;
+        }
+
+        _gameBindingStatus.Text = _gameBindingEdit.ApplyState switch
+        {
+            GameBindingApplyState.Ready => L("「適用」で変更を予約します。", "Press Apply to queue the change."),
+            GameBindingApplyState.MultipleChanges => L("1回に変更できるのは1項目です。他の変更を元に戻してください。", "Only one action can be changed at a time. Revert the other changes."),
+            GameBindingApplyState.UnknownCurrent => L("現在値が不明な項目は変更できません。", "Actions with an unknown current value cannot be changed."),
+            _ => string.Empty
+        };
+        _gameBindingApply.Enabled = _gameBindingEdit.ApplyState == GameBindingApplyState.Ready;
+        _gameBindingCancel.Enabled = _gameBindingEdit.PendingCount > 0;
+        foreach (KeyValuePair<int, ComboBox> pair in _gameBindingSelectors)
+        {
+            pair.Value.Enabled = _gameBindingEdit.IsEditable(pair.Key);
+        }
+    }
+
+    private void QueueGameBindingRequest()
+    {
+        GameBindingWriteRequest? request = _gameBindingEdit.BuildRequest(() => Guid.NewGuid().ToString("N"));
+        if (request == null)
+        {
+            return;
+        }
+        AtomicJsonFile.WriteJsonAtomic(
+            _gameBindingRequestPath,
+            JsonSerializer.Serialize(request, new JsonSerializerOptions { WriteIndented = true }));
+        _gameBindingRequestQueued = true;
+        RefreshGameBindingControls();
+    }
+
+    private void CancelGameBindingEdit()
+    {
+        if (_gameBindingRequestQueued)
+        {
+            TryDeleteFile(_gameBindingRequestPath);
+            _gameBindingRequestQueued = false;
+        }
+        _gameBindingEdit.Cancel();
+        _gameBindingSelectorsResetting = true;
+        foreach (KeyValuePair<int, ComboBox> pair in _gameBindingSelectors)
+        {
+            int raw = _gameBindingEdit.GetSelection(pair.Key);
+            pair.Value.SelectedIndex = GameBindingSupportedButtons.IsSupported(raw) ? IndexOfOption(raw) : -1;
+        }
+        _gameBindingSelectorsResetting = false;
+        RefreshGameBindingControls();
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private sealed class GameButtonOption
+    {
+        internal GameButtonOption(int raw, string name)
+        {
+            Raw = raw;
+            Name = name;
+        }
+
+        internal int Raw { get; }
+        internal string Name { get; }
+        public override string ToString() => Name;
     }
 
     private static string GetContextDisplayName(ControllerContext context)
@@ -499,7 +797,15 @@ internal sealed class SettingsForm : Form
     private void EditButton(ControllerButton primary)
     {
         ControllerContext context = (ControllerContext)_context.SelectedItem;
-        using var dialog = new AssignmentDialog(context, primary, _actions, _bindings, _japanese);
+        using var dialog = new AssignmentDialog(
+            context,
+            primary,
+            _actions,
+            _bindings,
+            _japanese,
+            AssignUserBinding,
+            SetUnassignedOverride,
+            ResetAction);
         TopMost = false;
         dialog.TopMost = true;
         try
@@ -569,6 +875,7 @@ internal sealed class SettingsForm : Form
 
     private void SaveAndClose()
     {
+        _savedAndClosing = true;
         SettingsModel settings = Read<SettingsModel>(_settingsPath) ?? new SettingsModel();
         settings.UiLanguage = _uiLanguage.SelectedIndex == 1 ? "Japanese" : _uiLanguage.SelectedIndex == 2 ? "English" : "Auto";
         settings.RightStickMode = _mode.SelectedIndex == 1 ? RightStickMode.HorizontalTurn : RightStickMode.FullCamera;
@@ -584,8 +891,17 @@ internal sealed class SettingsForm : Form
                 ? 2.0f
                 : _autoBattleSpeed.SelectedIndex == 1 ? 1.5f : 1.0f;
         var options = new JsonSerializerOptions { WriteIndented = true };
-        File.WriteAllText(_settingsPath, JsonSerializer.Serialize(settings, options));
-        File.WriteAllText(_bindingsPath, JsonSerializer.Serialize(_bindings, options));
+        AtomicJsonFile.WriteJsonAtomic(_settingsPath, JsonSerializer.Serialize(settings, options));
+        BindingFileMigration.CreateLegacyBackupOnce(
+            _bindingsPath,
+            _bindingsLoadedFromLegacy);
+        AtomicJsonFile.WriteJsonAtomic(
+            _bindingsPath,
+            JsonSerializer.Serialize(
+                BindingFileMigration.CreateV1(
+                    _bindings.Concat(_savedBindingConflicts.SelectMany(conflict => conflict.Bindings)),
+                    _bindingOverrides),
+                options));
         var requests = _featureToggles
             .Where(pair => pair.Key.Checked != pair.Value.Initial)
             .Select(pair => new FeatureToggleRequest
@@ -604,15 +920,363 @@ internal sealed class SettingsForm : Form
                     Value = ((FeatureValueOption)pair.Key.SelectedItem!).RawValue
                 }))
             .ToList();
-        File.WriteAllText(_featureRequestsPath, JsonSerializer.Serialize(requests, options));
+        AtomicJsonFile.WriteJsonAtomic(_featureRequestsPath, JsonSerializer.Serialize(requests, options));
         Close();
     }
+
+    private void AssignUserBinding(
+        ControllerContext context,
+        IReadOnlyList<ControllerButton> buttons,
+        string actionId)
+    {
+        int[] canonicalButtons = buttons
+            .Where(button => button != ControllerButton.None)
+            .Distinct()
+            .Take(3)
+            .OrderBy(button => button)
+            .Select(button => (int)button)
+            .ToArray();
+        string slotKey = DefaultBindingResolver.SlotKey((int)context, canonicalButtons);
+        _savedBindingConflicts.RemoveAll(conflict =>
+            conflict.SlotKey == slotKey ||
+            conflict.Bindings.Any(binding =>
+                binding.Context == context &&
+                binding.ActionId.Equals(actionId, StringComparison.OrdinalIgnoreCase)));
+        BindingEditOperations.AssignUser(
+            _bindings,
+            _bindingOverrides,
+            (int)context,
+            actionId,
+            canonicalButtons,
+            binding => (int)binding.Context,
+            binding => binding.ActionId,
+            binding => binding.Buttons.OrderBy(button => button).Select(button => (int)button).ToArray(),
+            () => new BindingEntry
+            {
+                Context = context,
+                Buttons = canonicalButtons.Select(button => (ControllerButton)button).ToList(),
+                ActionId = actionId,
+                Source = "User"
+            });
+    }
+
+    private void SetUnassignedOverride(ControllerContext context, string actionId)
+    {
+        BindingEditOperations.SetUnassigned(
+            _bindings,
+            _bindingOverrides,
+            (int)context,
+            actionId,
+            binding => (int)binding.Context,
+            binding => binding.ActionId);
+    }
+
+    private void ResetAction(ControllerContext context, string actionId)
+    {
+        _savedBindingConflicts.RemoveAll(conflict => conflict.Bindings.Any(binding =>
+            binding.Context == context &&
+            binding.ActionId.Equals(actionId, StringComparison.OrdinalIgnoreCase)));
+        BindingEditOperations.ResetAction(
+            _bindings,
+            _bindingOverrides,
+            (int)context,
+            actionId,
+            binding => (int)binding.Context,
+            binding => binding.ActionId);
+        ResolveBindingsLocally();
+    }
+
+    private void ResetCurrentContext()
+    {
+        if (!(_context.SelectedItem is ControllerContext context))
+        {
+            return;
+        }
+        BindingEditOperations.ResetContext(
+            _bindings,
+            _bindingOverrides,
+            (int)context,
+            binding => (int)binding.Context);
+        _savedBindingConflicts.RemoveAll(conflict =>
+            conflict.Bindings.Any(binding => binding.Context == context));
+        ResolveBindingsLocally();
+        RefreshPadLabels();
+    }
+
+    private void ResetAllBindings()
+    {
+        BindingEditOperations.ResetAll(_bindings, _bindingOverrides);
+        _savedBindingConflicts.Clear();
+        ResolveBindingsLocally();
+        RefreshPadLabels();
+    }
+
+    private void ResolveBindingsLocally()
+    {
+        foreach (DefaultBindingCandidate resolved in AnalyzeDefaultBindings().Applied)
+        {
+            _bindings.Add(new BindingEntry
+            {
+                Context = (ControllerContext)resolved.Context,
+                Buttons = resolved.Buttons.Select(button => (ControllerButton)button).ToList(),
+                ActionId = resolved.ActionId,
+                Source = "Default"
+            });
+        }
+    }
+
+    private DefaultBindingResolver.Resolution AnalyzeDefaultBindings()
+    {
+        var actionIds = new HashSet<string>(
+            _actions.Select(action => action.ActionId),
+            StringComparer.OrdinalIgnoreCase);
+        var savedActionContexts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var occupiedSlots = new HashSet<string>(StringComparer.Ordinal);
+        foreach (BindingEntry binding in _bindings.Where(binding => actionIds.Contains(binding.ActionId)))
+        {
+            savedActionContexts.Add(DefaultBindingResolver.ActionContextKey(
+                (int)binding.Context,
+                binding.ActionId));
+            occupiedSlots.Add(DefaultBindingResolver.SlotKey(
+                (int)binding.Context,
+                binding.Buttons.OrderBy(button => button).Select(button => (int)button)));
+        }
+        foreach (BindingEntry binding in _savedBindingConflicts
+                     .SelectMany(conflict => conflict.Bindings)
+                     .Where(binding => actionIds.Contains(binding.ActionId)))
+        {
+            savedActionContexts.Add(DefaultBindingResolver.ActionContextKey(
+                (int)binding.Context,
+                binding.ActionId));
+        }
+        var overrides = new HashSet<string>(
+            _bindingOverrides.Select(entry => DefaultBindingResolver.ActionContextKey(
+                entry.Context,
+                entry.ActionId)),
+            StringComparer.OrdinalIgnoreCase);
+        IEnumerable<DefaultBindingCandidate> candidates = _actions.SelectMany(action =>
+            action.DefaultBindings
+                .Where(binding => binding.Context is ControllerContext.Field or
+                    ControllerContext.Battle or ControllerContext.Puzzle or
+                    ControllerContext.WorldMap or ControllerContext.Menu)
+                .Select(binding => new DefaultBindingCandidate
+                {
+                    Context = (int)binding.Context,
+                    Buttons = binding.Buttons
+                        .Where(button => button != ControllerButton.None)
+                        .Distinct()
+                        .Take(3)
+                        .OrderBy(button => button)
+                        .Select(button => (int)button)
+                        .ToArray(),
+                    ActionId = action.ActionId
+                })
+                .Where(candidate => candidate.Buttons.Count > 0));
+        return DefaultBindingResolver.Analyze(
+            candidates,
+            savedActionContexts,
+            occupiedSlots,
+            overrides);
+    }
+
+    private void ShowBindingStatus()
+    {
+        string content = string.Join(
+            Environment.NewLine + Environment.NewLine,
+            BuildBindingStatusItems().Select(BindingStatusFormatter.Format));
+        using var dialog = new Form
+        {
+            Text = L("バインド状態", "Binding Status"),
+            StartPosition = FormStartPosition.CenterParent,
+            ClientSize = new Size(660, 480),
+            MinimizeBox = false,
+            MaximizeBox = false,
+            TopMost = true
+        };
+        dialog.Controls.Add(new TextBox
+        {
+            Multiline = true,
+            ReadOnly = true,
+            ScrollBars = ScrollBars.Vertical,
+            Dock = DockStyle.Fill,
+            Font = new Font("Segoe UI", 10),
+            Text = content.Length == 0 ? L("状態情報はありません。", "No binding status is available.") : content
+        });
+        TopMost = false;
+        try
+        {
+            dialog.ShowDialog(this);
+        }
+        finally
+        {
+            TopMost = true;
+            Activate();
+        }
+    }
+
+    private IReadOnlyList<BindingStatusItem> BuildBindingStatusItems()
+    {
+        DefaultBindingResolver.Resolution resolution = AnalyzeDefaultBindings();
+        var items = new List<BindingStatusItem>();
+        ControllerContext[] contexts =
+        {
+            ControllerContext.Field,
+            ControllerContext.WorldMap,
+            ControllerContext.Battle,
+            ControllerContext.Menu,
+            ControllerContext.Puzzle
+        };
+        foreach (ActionDefinition action in _actions.OrderBy(action => action.ActionId, StringComparer.OrdinalIgnoreCase))
+        {
+            foreach (ControllerContext context in contexts.Where(context => action.Contexts.HasFlag(context)))
+            {
+                BindingEntry? binding = _bindings.FirstOrDefault(entry =>
+                    entry.Context == context &&
+                    entry.ActionId.Equals(action.ActionId, StringComparison.OrdinalIgnoreCase));
+                DefaultBindingResolver.DefaultBindingConflict? conflict = resolution.Conflicts.FirstOrDefault(entry =>
+                    entry.Context == (int)context &&
+                    entry.ActionIds.Contains(action.ActionId, StringComparer.OrdinalIgnoreCase));
+                bool unassigned = _bindingOverrides.Any(entry =>
+                    entry.Context == (int)context &&
+                    entry.ActionId.Equals(action.ActionId, StringComparison.OrdinalIgnoreCase));
+                DefaultBindingDefinition? defaultBinding = action.DefaultBindings.FirstOrDefault(entry =>
+                    entry.Context == context);
+                items.Add(new BindingStatusItem
+                {
+                    DisplayName = GetActionDisplayName(action.ActionId),
+                    Context = context.ToString(),
+                    Status = binding != null ? "Bound" :
+                        unassigned ? "Unassigned by user" :
+                        conflict != null ? "Default Conflict" : "Unassigned",
+                    DefaultBinding = defaultBinding == null ? string.Empty : FormatButtons(defaultBinding.Buttons),
+                    ConflictsWith = conflict == null
+                        ? Array.Empty<string>()
+                        : conflict.ActionIds
+                            .Where(id => !id.Equals(action.ActionId, StringComparison.OrdinalIgnoreCase))
+                            .Select(GetActionDisplayName)
+                            .ToArray()
+                });
+            }
+        }
+        var registered = new HashSet<string>(_actions.Select(action => action.ActionId), StringComparer.OrdinalIgnoreCase);
+        items.AddRange(_bindings
+            .Where(binding => !registered.Contains(binding.ActionId))
+            .Select(binding => new BindingStatusItem
+            {
+                DisplayName = binding.ActionId,
+                Context = binding.Context.ToString(),
+                Status = "Not currently registered"
+            }));
+        foreach (SavedBindingConflict<BindingEntry> savedConflict in _savedBindingConflicts)
+        {
+            foreach (BindingEntry binding in savedConflict.Bindings)
+            {
+                items.Add(new BindingStatusItem
+                {
+                    DisplayName = GetActionDisplayName(binding.ActionId),
+                    Context = binding.Context.ToString(),
+                    Status = "Saved Binding Conflict",
+                    DefaultBinding = FormatButtons(binding.Buttons),
+                    ConflictsWith = savedConflict.Bindings
+                        .Where(other => !ReferenceEquals(other, binding))
+                        .Select(other => GetActionDisplayName(other.ActionId))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToArray()
+                });
+            }
+        }
+        if (_gameBindingsAvailable)
+        {
+            items.AddRange(_gameBindings.Select(binding => new BindingStatusItem
+            {
+                DisplayName = binding.KeyId + " [GAME]",
+                Context = binding.ControllerId,
+                Status = "Read-only",
+                CurrentBinding = binding.CurrentButton
+            }));
+        }
+        else
+        {
+            items.Add(new BindingStatusItem
+            {
+                DisplayName = "GAME Binding",
+                Context = "Native",
+                Status = "Unavailable"
+            });
+        }
+        return items
+            .OrderBy(item => item.Context, StringComparer.Ordinal)
+            .ThenBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Status, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static string FormatButtons(IEnumerable<ControllerButton> buttons) =>
+        string.Join(" + ", buttons.Where(button => button != ControllerButton.None));
 
     private static T? Read<T>(string path)
     {
         try { return File.Exists(path) ? JsonSerializer.Deserialize<T>(File.ReadAllText(path)) : default; }
         catch { return default; }
     }
+
+    private static ActionRegistrySnapshot<ActionDefinition> ReadActionSnapshot(string path)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return new ActionRegistrySnapshot<ActionDefinition>();
+            }
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
+            if (document.RootElement.ValueKind == JsonValueKind.Array)
+            {
+                return new ActionRegistrySnapshot<ActionDefinition>
+                {
+                    Actions = document.RootElement.Deserialize<List<ActionDefinition>>() ?? new()
+                };
+            }
+            return document.RootElement.Deserialize<ActionRegistrySnapshot<ActionDefinition>>() ?? new();
+        }
+        catch
+        {
+            return new ActionRegistrySnapshot<ActionDefinition>();
+        }
+    }
+
+    private static BindingLoadResult<BindingEntry> ReadBindings(string path)
+    {
+        try
+        {
+            return BindingFileMigration.Read<BindingEntry>(
+                path,
+                IsValidBinding,
+                GetBindingSlotKey,
+                binding => binding.Source = "Legacy");
+        }
+        catch
+        {
+            return new BindingLoadResult<BindingEntry>();
+        }
+    }
+
+    private static bool IsValidBinding(BindingEntry binding) =>
+        binding.Context is ControllerContext.Field or ControllerContext.Battle or
+            ControllerContext.Puzzle or ControllerContext.WorldMap or ControllerContext.Menu &&
+        !string.IsNullOrWhiteSpace(binding.ActionId) &&
+        binding.Buttons != null &&
+        binding.Buttons.Count is >= 1 and <= 3 &&
+        binding.Buttons.All(button =>
+            button is >= ControllerButton.A and <= ControllerButton.DPadRight) &&
+        binding.Buttons.Distinct().Count() == binding.Buttons.Count &&
+        binding.Source is "Legacy" or "Default" or "User";
+
+    private static string GetBindingSlotKey(BindingEntry binding) =>
+        ((int)binding.Context) + ":" + string.Join(",", binding.Buttons
+            .Where(button => button != ControllerButton.None)
+            .Distinct()
+            .Take(3)
+            .OrderBy(button => button));
 
     private string L(string japanese, string english) => _japanese ? japanese : english;
 
@@ -738,13 +1402,25 @@ internal sealed class AssignmentDialog : Form
     private readonly List<ActionDefinition> _actions;
     private readonly List<BindingEntry> _bindings;
     private readonly bool _japanese;
+    private readonly Action<ControllerContext, IReadOnlyList<ControllerButton>, string> _assignUser;
+    private readonly Action<ControllerContext, string> _setUnassigned;
+    private readonly Action<ControllerContext, string> _resetAction;
     private readonly ComboBox _action = new ComboBox();
     private readonly CheckedListBox _buttons = new CheckedListBox();
     private readonly ListBox _current = new ListBox();
 
-    internal AssignmentDialog(ControllerContext context, ControllerButton primary, List<ActionDefinition> actions, List<BindingEntry> bindings, bool japanese)
+    internal AssignmentDialog(
+        ControllerContext context,
+        ControllerButton primary,
+        List<ActionDefinition> actions,
+        List<BindingEntry> bindings,
+        bool japanese,
+        Action<ControllerContext, IReadOnlyList<ControllerButton>, string> assignUser,
+        Action<ControllerContext, string> setUnassigned,
+        Action<ControllerContext, string> resetAction)
     {
         _context = context; _primary = primary; _actions = actions; _bindings = bindings; _japanese = japanese;
+        _assignUser = assignUser; _setUnassigned = setUnassigned; _resetAction = resetAction;
         Text = context + " / " + primary + (japanese ? " の割当" : " Bindings");
         ClientSize = new Size(610, 430);
         StartPosition = FormStartPosition.CenterParent;
@@ -759,15 +1435,17 @@ internal sealed class AssignmentDialog : Form
         _current.Location = new Point(310, 100); _current.Size = new Size(270, 210);
         RefreshCurrent();
         var add = new Button { Text = japanese ? "割当を追加／置換" : "Add / Replace", Location = new Point(20, 330), Size = new Size(160, 36) };
-        var remove = new Button { Text = japanese ? "選択した割当を解除" : "Remove Selected", Location = new Point(310, 330), Size = new Size(160, 36) };
+        var remove = new Button { Text = japanese ? "選択した機能をNone" : "Set Selected to None", Location = new Point(190, 330), Size = new Size(180, 36) };
+        var reset = new Button { Text = japanese ? "この機能をリセット" : "Reset this Action", Location = new Point(380, 330), Size = new Size(180, 36) };
         var close = new Button { Text = japanese ? "閉じる" : "Close", Location = new Point(480, 375), Size = new Size(100, 32), DialogResult = DialogResult.OK };
         add.Click += (_, _) => AddBinding();
         remove.Click += (_, _) => RemoveBinding();
+        reset.Click += (_, _) => ResetSelectedAction();
         Controls.AddRange(new Control[] {
             new Label { Text = japanese ? "機能（この場面に対応する登録機能のみ）" : "Action (available in this context)", Location = new Point(20, 18), AutoSize = true }, _action,
             new Label { Text = japanese ? "入力ジェスチャー（最大3ボタン）" : "Input chord (up to 3 buttons)", Location = new Point(20, 78), AutoSize = true }, _buttons,
             new Label { Text = japanese ? "現在このボタンを含む割当" : "Bindings containing this button", Location = new Point(310, 78), AutoSize = true }, _current,
-            add, remove, close });
+            add, remove, reset, close });
     }
 
     private void AddBinding()
@@ -775,14 +1453,25 @@ internal sealed class AssignmentDialog : Form
         if (!(_action.SelectedItem is ActionItem selected)) return;
         List<ControllerButton> chord = _buttons.CheckedItems.Cast<ControllerButton>().Distinct().Take(3).OrderBy(x => x).ToList();
         if (chord.Count == 0 || !chord.Contains(_primary)) { MessageBox.Show(_japanese ? "クリックしたボタンを含めてください。" : "The chord must include the button you clicked."); return; }
-        _bindings.RemoveAll(binding => binding.Context == _context && binding.Buttons.OrderBy(x => x).SequenceEqual(chord));
-        _bindings.Add(new BindingEntry { Context = _context, Buttons = chord, ActionId = selected.Definition.ActionId });
+        _assignUser(_context, chord, selected.Definition.ActionId);
         RefreshCurrent();
     }
 
     private void RemoveBinding()
     {
-        if (_current.SelectedItem is BindingItem item) _bindings.Remove(item.Binding);
+        if (_current.SelectedItem is BindingItem item)
+        {
+            _setUnassigned(_context, item.Binding.ActionId);
+        }
+        RefreshCurrent();
+    }
+
+    private void ResetSelectedAction()
+    {
+        if (_action.SelectedItem is ActionItem selected)
+        {
+            _resetAction(_context, selected.Definition.ActionId);
+        }
         RefreshCurrent();
     }
 

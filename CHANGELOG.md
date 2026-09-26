@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Editable native GAME controller bindings in the Settings "GAME Bindings" tab.
+- Support for 15 verified actions and 12 buttons (A, B, X, Y, LB, LT, RB, RT, L3, R3, SELECT, START).
+- Changes are written through the game's native key config save path and persist across restarts.
+- Safety checks: one change per Apply, native duplicate rejection, stale-value detection, readiness checks, and automatic rollback on failure.
+
+### Changed
+
+- The GAME Bindings tab is no longer read-only. Actions bound to an unsupported button stay visible as "Unknown (raw=N)".
+
+### Fixed
+
+- GAME binding changes are applied once field exploration resumes after Settings closes, instead of being rejected while the game window is still restoring.
+
 ## 2.0.3 - 2026-09-16
 
 - Reduced Field Dash speed to 1.5x.

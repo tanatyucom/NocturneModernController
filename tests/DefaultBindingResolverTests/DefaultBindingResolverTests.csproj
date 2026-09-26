@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\shared\AtomicJsonFile.cs" Link="AtomicJsonFile.cs" />
+    <Compile Include="..\..\shared\BindingEditOperations.cs" Link="BindingEditOperations.cs" />
+    <Compile Include="..\..\shared\BindingFileMigration.cs" Link="BindingFileMigration.cs" />
+    <Compile Include="..\..\shared\DefaultBindingResolver.cs" Link="DefaultBindingResolver.cs" />
+    <Compile Include="..\..\shared\BindingStatusFormatter.cs" Link="BindingStatusFormatter.cs" />
+    <Compile Include="..\..\shared\GameBindingSnapshot.cs" Link="GameBindingSnapshot.cs" />
+    <Compile Include="..\..\shared\GameBindingWrite.cs" Link="GameBindingWrite.cs" />
+    <Compile Include="..\..\shared\GameBindingEdit.cs" Link="GameBindingEdit.cs" />
+  </ItemGroup>
+</Project>

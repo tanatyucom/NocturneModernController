@@ -1,0 +1,15 @@
+
+void FUN_1822ee830(undefined4 param_1)
+
+{
+  if (DAT_182e2cc73 == '\0') {
+    thunk_FUN_1800b08b0(0x3eff);
+    DAT_182e2cc73 = '\x01';
+  }
+  if (((*(byte *)(DAT_182e4c220 + 0x12f) & 2) != 0) && (*(int *)(DAT_182e4c220 + 0xe0) == 0)) {
+    il2cpp_runtime_class_init();
+  }
+  FUN_1822ee540(param_1,0,0);
+  return;
+}
+

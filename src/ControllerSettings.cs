@@ -87,7 +87,7 @@ namespace NocturneModernController
         internal static void Save()
         {
             var options = new JsonSerializerOptions { WriteIndented = true };
-            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(Current, options));
+            AtomicJsonFile.WriteJsonAtomic(SettingsPath, JsonSerializer.Serialize(Current, options));
         }
 
         internal static bool UseJapanese => Current.UiLanguage.Equals("Japanese", StringComparison.OrdinalIgnoreCase) ||

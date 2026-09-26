@@ -72,6 +72,7 @@ namespace NocturneModernController
         public ControllerContext Context { get; set; }
         public List<ControllerButton> Buttons { get; set; } = new();
         public string ActionId { get; set; } = string.Empty;
+        public string Source { get; set; } = "Default";
     }
 
     public sealed class FeatureMetadata
@@ -122,9 +123,12 @@ namespace NocturneModernController
         private static readonly Dictionary<string, ControllerActionDefinition> Actions =
             new(StringComparer.OrdinalIgnoreCase);
         private static readonly List<ControllerBindingEntry> Bindings = new();
+        private static readonly List<BindingOverrideEntry> BindingOverrides = new();
+        private static readonly List<SavedBindingConflict<ControllerBindingEntry>> SavedBindingConflicts = new();
         private static readonly Dictionary<string, IModernFeatureProvider> FeatureProviders =
             new(StringComparer.OrdinalIgnoreCase);
         private static bool _bindingsLoaded;
+        private static bool _bindingsLoadedFromLegacy;
 
         public static void RegisterFeatureProvider(IModernFeatureProvider provider)
         {
@@ -223,22 +227,80 @@ namespace NocturneModernController
             }
 
             Actions[definition.ActionId] = definition;
+        }
+
+        internal static void ResolveBindings()
+        {
             EnsureBindingsLoaded();
-            foreach (ControllerDefaultBinding defaultBinding in definition.DefaultBindings)
+            var registeredActionIds = new HashSet<string>(
+                Actions.Keys,
+                StringComparer.OrdinalIgnoreCase);
+            var savedActionContexts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var occupiedSlots = new HashSet<string>(StringComparer.Ordinal);
+            foreach (ControllerBindingEntry binding in Bindings)
             {
-                bool exists = Bindings.Any(binding =>
-                    binding.Context == defaultBinding.Context &&
-                    SameChord(binding.Buttons, defaultBinding.Buttons));
-                if (!exists)
+                if (!registeredActionIds.Contains(binding.ActionId))
                 {
-                    Bindings.Add(new ControllerBindingEntry
-                    {
-                        Context = defaultBinding.Context,
-                        Buttons = NormalizeChord(defaultBinding.Buttons),
-                        ActionId = definition.ActionId
-                    });
+                    continue;
+                }
+
+                savedActionContexts.Add(DefaultBindingResolver.ActionContextKey(
+                    (int)binding.Context,
+                    binding.ActionId));
+                occupiedSlots.Add(DefaultBindingResolver.SlotKey(
+                    (int)binding.Context,
+                    NormalizeChord(binding.Buttons).Select(button => (int)button)));
+            }
+            foreach (ControllerBindingEntry binding in SavedBindingConflicts
+                         .SelectMany(conflict => conflict.Bindings))
+            {
+                if (registeredActionIds.Contains(binding.ActionId))
+                {
+                    savedActionContexts.Add(DefaultBindingResolver.ActionContextKey(
+                        (int)binding.Context,
+                        binding.ActionId));
                 }
             }
+
+            var unassignedOverrides = new HashSet<string>(
+                BindingOverrides
+                    .Where(entry => entry.State == "Unassigned")
+                    .Select(entry => DefaultBindingResolver.ActionContextKey(
+                        entry.Context,
+                        entry.ActionId)),
+                StringComparer.OrdinalIgnoreCase);
+            var candidates = Actions.Values.SelectMany(action =>
+                action.DefaultBindings
+                    .Select(binding => new
+                    {
+                        Binding = binding,
+                        Buttons = NormalizeChord(binding.Buttons)
+                    })
+                    .Where(item =>
+                        IsSingleContext(item.Binding.Context) &&
+                        item.Buttons.Count > 0)
+                    .Select(item => new DefaultBindingCandidate
+                    {
+                        Context = (int)item.Binding.Context,
+                        Buttons = item.Buttons.Select(button => (int)button).ToArray(),
+                        ActionId = action.ActionId
+                    }));
+
+            foreach (DefaultBindingCandidate resolved in DefaultBindingResolver.Resolve(
+                         candidates,
+                         savedActionContexts,
+                         occupiedSlots,
+                         unassignedOverrides))
+            {
+                Bindings.Add(new ControllerBindingEntry
+                {
+                    Context = (ControllerContext)resolved.Context,
+                    Buttons = resolved.Buttons.Select(button => (ControllerButton)button).ToList(),
+                    ActionId = resolved.ActionId,
+                    Source = "Default"
+                });
+            }
+
             SaveSnapshots();
         }
 
@@ -247,6 +309,47 @@ namespace NocturneModernController
 
         public static IReadOnlyList<ControllerBindingEntry> GetBindings() =>
             Bindings.ToArray();
+
+        internal static void SetUnassignedOverride(
+            ControllerContext context,
+            string actionId)
+        {
+            EnsureBindingsLoaded();
+            if (!IsSingleContext(context) || string.IsNullOrWhiteSpace(actionId))
+            {
+                throw new ArgumentException("A single context and ActionId are required.");
+            }
+
+            BindingEditOperations.SetUnassigned(
+                Bindings,
+                BindingOverrides,
+                (int)context,
+                actionId,
+                binding => (int)binding.Context,
+                binding => binding.ActionId);
+        }
+
+        internal static void ClearUnassignedOverride(
+            ControllerContext context,
+            string actionId)
+        {
+            EnsureBindingsLoaded();
+            BindingEditOperations.ClearOverride(
+                BindingOverrides,
+                (int)context,
+                actionId);
+        }
+
+        internal static bool HasUnassignedOverride(
+            ControllerContext context,
+            string actionId)
+        {
+            EnsureBindingsLoaded();
+            return BindingEditOperations.HasOverride(
+                BindingOverrides,
+                (int)context,
+                actionId);
+        }
 
         public static bool IsHeld(string actionId, ControllerContext context, int padNumber = 0)
         {
@@ -298,17 +401,168 @@ namespace NocturneModernController
             string directory = ModDirectory;
             Directory.CreateDirectory(directory);
             var options = new JsonSerializerOptions { WriteIndented = true };
-            File.WriteAllText(RegistryPath, JsonSerializer.Serialize(Actions.Values, options));
-            File.WriteAllText(BindingsPath, JsonSerializer.Serialize(Bindings, options));
+            WriteRegistrySnapshot(options);
+            BindingFileMigration.CreateLegacyBackupOnce(
+                BindingsPath,
+                _bindingsLoadedFromLegacy);
+            AtomicJsonFile.WriteJsonAtomic(
+                BindingsPath,
+                JsonSerializer.Serialize(
+                    BindingFileMigration.CreateV1(
+                        Bindings.Concat(SavedBindingConflicts.SelectMany(conflict => conflict.Bindings)),
+                        BindingOverrides),
+                    options));
+            _bindingsLoadedFromLegacy = false;
             SaveFeatureSnapshot();
         }
+
+        // index=7 is CONFIRMED as "Field/Dungeon Menu" (SESSION_RESUME_NOTES.md
+        // §17), but "GetConfigGamePad succeeds without throwing" is NOT the
+        // same as "the player's saved GAME binding is loaded" (§19,
+        // REJECTED by real-hardware evidence: a startup-time 34/34-success
+        // sweep, captured before dds3TitleInit had even run, returned a
+        // stale/default value for index=7 instead of the player's actual
+        // setting). The only readiness signal with real-hardware confirmation
+        // is FieldDashPatch.IsExplorationActive == true (the same gate
+        // GameBindingProbe used for the A/B/A that correctly tracked Y/X/Y).
+        // SaveSnapshots() still writes whatever partial/default result is
+        // available at startup so the file always exists; only a capture
+        // taken after exploration becomes active is treated as authoritative
+        // and allowed to mark readiness / refresh the registry file, without
+        // touching bindings.json or the feature snapshot (no effect on the
+        // binding resolver / user binding state).
+        private static bool _gameActionBindingsReady;
+        private static int _gameActionBindingsRetryFrame;
+        private const int GameActionBindingsRetryIntervalFrames = 45;
+
+        // Readiness gate for native GAME binding writes (NativeGameBindingPort).
+        internal static bool GameActionBindingsReady => _gameActionBindingsReady;
+
+        // Re-publishes the authoritative GAME binding snapshot after a native
+        // binding write, so the next Settings session shows the new value. Only
+        // replaces the snapshot with a complete sweep; otherwise leaves it as is.
+        internal static void RefreshAuthoritativeGameActionBindings()
+        {
+            if (!_gameActionBindingsReady)
+            {
+                return;
+            }
+            try
+            {
+                GameActionBindingSnapshotResult gameActionBindings = CaptureGameActionBindingsRaw();
+                if (!gameActionBindings.Available ||
+                    gameActionBindings.Entries.Count != GameActionBindingSnapshotReader.SlotCount)
+                {
+                    return;
+                }
+                WriteRegistrySnapshot(new JsonSerializerOptions { WriteIndented = true }, gameActionBindings);
+            }
+            catch (Exception ex)
+            {
+                MelonLoader.MelonLogger.Warning(
+                    $"[GameActionBindingSnapshot] refresh after GAME binding write failed ({ex.GetType().Name})");
+            }
+        }
+
+        private static void WriteRegistrySnapshot(
+            JsonSerializerOptions options,
+            GameActionBindingSnapshotResult? gameActionBindingsOverride = null)
+        {
+            GameBindingSnapshotResult gameBindings = CaptureGameBindings();
+            GameActionBindingSnapshotResult gameActionBindings =
+                gameActionBindingsOverride ?? CaptureGameActionBindingsRaw();
+            AtomicJsonFile.WriteJsonAtomic(
+                RegistryPath,
+                JsonSerializer.Serialize(new ActionRegistrySnapshot<ControllerActionDefinition>
+                {
+                    Actions = Actions.Values
+                        .OrderBy(action => action.ActionId, StringComparer.OrdinalIgnoreCase)
+                        .ToList(),
+                    GameBindingsAvailable = gameBindings.Available,
+                    GameBindings = gameBindings.Bindings.ToList(),
+                    GameActionBindingsAvailable = gameActionBindings.Available,
+                    GameActionBindingsRaw = gameActionBindings.Entries.ToList(),
+                    GameActionBindingsAuthoritative = gameActionBindingsOverride != null
+                }, options));
+            // NOTE: does not set _gameActionBindingsReady. A successful write
+            // here (e.g. from startup SaveSnapshots()) is not proof the
+            // player's saved binding was loaded -- see the block comment above.
+        }
+
+        // Read-only readiness retry, gated on the one condition with
+        // real-hardware confirmation: FieldDashPatch.IsExplorationActive.
+        // GetConfigGamePad is not even called while inactive. Frame-gated
+        // once active, to avoid calling the native getter 34x every frame;
+        // stops permanently after the first fully successful sweep taken
+        // while exploring.
+        internal static void RetryGameActionBindingsIfNeeded()
+        {
+            if (_gameActionBindingsReady)
+            {
+                return;
+            }
+
+            if (!FieldDashPatch.IsExplorationActive)
+            {
+                return;
+            }
+
+            _gameActionBindingsRetryFrame++;
+            if (_gameActionBindingsRetryFrame % GameActionBindingsRetryIntervalFrames != 0)
+            {
+                return;
+            }
+
+            GameActionBindingSnapshotResult gameActionBindings = CaptureGameActionBindingsRaw();
+            int failed = GameActionBindingSnapshotReader.SlotCount - gameActionBindings.Entries.Count;
+            if (!gameActionBindings.Available || failed > 0)
+            {
+                MelonLoader.MelonLogger.Msg(
+                    $"[GameActionBindingSnapshot] GAME binding state not ready yet after " +
+                    $"exploration became active ({failed}/{GameActionBindingSnapshotReader.SlotCount} failed)");
+                return;
+            }
+
+            _gameActionBindingsReady = true;
+            MelonLoader.MelonLogger.Msg(
+                $"[GameActionBindingSnapshot] GAME binding state ready after exploration " +
+                $"became active ({gameActionBindings.Entries.Count}/{GameActionBindingSnapshotReader.SlotCount}); " +
+                "snapshot refreshed");
+
+            string directory = ModDirectory;
+            Directory.CreateDirectory(directory);
+            var options = new JsonSerializerOptions { WriteIndented = true };
+            WriteRegistrySnapshot(options, gameActionBindings);
+        }
+
+        private static GameBindingSnapshotResult CaptureGameBindings() =>
+            GameBindingSnapshotReader.Capture((controllerId, keyId) =>
+            {
+                InputAssign inputAssign = InputAssign.Instance;
+                if (inputAssign == null)
+                {
+                    throw new InvalidOperationException("InputAssign.Instance is unavailable.");
+                }
+                return inputAssign.GetAssignCode(
+                    (InputAssign.ControllerID)controllerId,
+                    (InputAssign.KeyID)keyId).ToString();
+            });
+
+        // GAME binding SSoT candidate (confirmed 2026-09-21, SESSION_RESUME_NOTES.md
+        // §17-23; 15 indices independently A/B/A-confirmed as of this writing,
+        // see investigations/GAMEBINDING_INDEX_MAP_20260921.md). Distinct read
+        // path from CaptureGameBindings/GetAssignCode above; kept separate
+        // rather than replacing it, since the majority of the 34 index slots
+        // still have no confirmed semantic mapping.
+        private static GameActionBindingSnapshotResult CaptureGameActionBindingsRaw() =>
+            GameActionBindingSnapshotReader.Capture(dds3ConfigGamePadSteam.GetConfigGamePad);
 
         internal static void SaveFeatureSnapshot()
         {
             string directory = ModDirectory;
             Directory.CreateDirectory(directory);
             var options = new JsonSerializerOptions { WriteIndented = true };
-            File.WriteAllText(
+            AtomicJsonFile.WriteJsonAtomic(
                 FeaturesPath,
                 JsonSerializer.Serialize(GetFeatureProviders(), options));
         }
@@ -340,7 +594,7 @@ namespace NocturneModernController
                     }
                     if (unhandled.Count > 0)
                     {
-                        File.WriteAllText(
+                        AtomicJsonFile.WriteJsonAtomic(
                             FeatureRequestsPath,
                             JsonSerializer.Serialize(
                                 unhandled,
@@ -444,23 +698,52 @@ namespace NocturneModernController
             }
             _bindingsLoaded = true;
             Bindings.Clear();
+            BindingOverrides.Clear();
+            SavedBindingConflicts.Clear();
+            _bindingsLoadedFromLegacy = false;
             try
             {
-                if (File.Exists(BindingsPath))
+                BindingLoadResult<ControllerBindingEntry> loaded =
+                    BindingFileMigration.Read<ControllerBindingEntry>(
+                        BindingsPath,
+                        IsValidBinding,
+                        GetBindingSlotKey,
+                        binding => binding.Source = "Legacy");
+                Bindings.AddRange(loaded.Bindings);
+                BindingOverrides.AddRange(loaded.Overrides);
+                SavedBindingConflicts.AddRange(loaded.SavedConflicts);
+                foreach (SavedBindingConflict<ControllerBindingEntry> conflict in loaded.SavedConflicts)
                 {
-                    List<ControllerBindingEntry>? loaded =
-                        JsonSerializer.Deserialize<List<ControllerBindingEntry>>(
-                            File.ReadAllText(BindingsPath));
-                    if (loaded != null)
-                    {
-                        Bindings.AddRange(loaded);
-                    }
+                    MelonLoader.MelonLogger.Warning(
+                        "[NocturneModernController] SavedBindingConflict " +
+                        conflict.SlotKey + ": " +
+                        string.Join(", ", conflict.Bindings
+                            .Select(binding => binding.ActionId)
+                            .OrderBy(actionId => actionId, StringComparer.OrdinalIgnoreCase)));
                 }
+                _bindingsLoadedFromLegacy = loaded.IsLegacy;
             }
             catch
             {
             }
         }
+
+        private static bool IsValidBinding(ControllerBindingEntry binding) =>
+            IsSingleContext(binding.Context) &&
+            !string.IsNullOrWhiteSpace(binding.ActionId) &&
+            binding.Buttons != null &&
+            binding.Buttons.Count is >= 1 and <= 3 &&
+            binding.Buttons.All(button =>
+                button is >= ControllerButton.A and <= ControllerButton.DPadRight) &&
+            binding.Buttons.Distinct().Count() == binding.Buttons.Count &&
+            binding.Source is "Legacy" or "Default" or "User";
+
+        private static bool IsSingleContext(ControllerContext context) =>
+            context is ControllerContext.Field or ControllerContext.Battle or
+                ControllerContext.Puzzle or ControllerContext.WorldMap or ControllerContext.Menu;
+
+        private static string GetBindingSlotKey(ControllerBindingEntry binding) =>
+            ((int)binding.Context) + ":" + string.Join(",", NormalizeChord(binding.Buttons));
 
         private static List<ControllerButton> NormalizeChord(IEnumerable<ControllerButton> buttons) =>
             buttons.Where(button => button != ControllerButton.None)
@@ -505,5 +788,9 @@ namespace NocturneModernController
             ModDirectory, "NocturneModernController.features.json");
         internal static string FeatureRequestsPath => Path.Combine(
             ModDirectory, "NocturneModernController.feature-requests.json");
+        internal static string GameBindingRequestPath => Path.Combine(
+            ModDirectory, "NocturneModernController.game-binding-request.json");
+        internal static string GameBindingResultPath => Path.Combine(
+            ModDirectory, "NocturneModernController.game-binding-result.json");
     }
 }

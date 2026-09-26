@@ -1,0 +1,271 @@
+
+undefined8 FUN_18228e320(undefined4 param_1,undefined1 *param_2)
+
+{
+  longlong lVar1;
+  ulonglong uVar2;
+  undefined8 uVar3;
+  longlong lVar4;
+  uint uVar5;
+  undefined8 uVar6;
+  undefined4 uVar7;
+  
+  if (DAT_182e2cae2 == '\0') {
+    thunk_FUN_1800b08b0(0x40f3);
+    DAT_182e2cae2 = '\x01';
+  }
+  *param_2 = 0;
+  if (((*(byte *)(DAT_182e4ed30 + 0x12f) & 2) != 0) && (*(int *)(DAT_182e4ed30 + 0xe0) == 0)) {
+    il2cpp_runtime_class_init();
+  }
+  if (**(longlong **)(DAT_182e4ed30 + 0xb8) == 0) {
+    return 0;
+  }
+  if (((*(byte *)(DAT_182e4ed30 + 0x12f) & 2) != 0) && (*(int *)(DAT_182e4ed30 + 0xe0) == 0)) {
+    il2cpp_runtime_class_init();
+  }
+  if (**(longlong **)(DAT_182e4ed30 + 0xb8) == 0) {
+LAB_18228e965:
+                    /* WARNING: Subroutine does not return */
+    FUN_1800e6970();
+  }
+  lVar4 = *(longlong *)(**(longlong **)(DAT_182e4ed30 + 0xb8) + 0xe8);
+  if (((*(byte *)(DAT_182e4eba0 + 0x12f) & 2) != 0) && (*(int *)(DAT_182e4eba0 + 0xe0) == 0)) {
+    il2cpp_runtime_class_init(DAT_182e4eba0);
+  }
+  lVar1 = *(longlong *)(*(longlong *)(DAT_182e4eba0 + 0xb8) + 0x38);
+  if ((lVar1 == 0) || (lVar4 == 0)) goto LAB_18228e965;
+  if (*(uint *)(lVar4 + 0x18) <= *(uint *)(lVar1 + 0x48)) {
+    uVar3 = thunk_FUN_1800a7230();
+                    /* WARNING: Subroutine does not return */
+    FUN_1800e6940(uVar3,0);
+  }
+  if (((*(byte *)(DAT_182e4c718 + 0x12f) & 2) != 0) && (*(int *)(DAT_182e4c718 + 0xe0) == 0)) {
+    il2cpp_runtime_class_init();
+  }
+  uVar2 = FUN_1821412b0(0,0);
+  uVar5 = 0;
+  lVar4 = DAT_182e4e3b8;
+  while( true ) {
+    if (((*(byte *)(lVar4 + 0x12f) & 2) != 0) && (*(int *)(lVar4 + 0xe0) == 0)) {
+      il2cpp_runtime_class_init(lVar4);
+      lVar4 = DAT_182e4e3b8;
+    }
+    lVar1 = *(longlong *)(*(longlong *)(lVar4 + 0xb8) + 0x38);
+    if (lVar1 == 0) goto LAB_18228e965;
+    if (*(int *)(lVar1 + 0x18) <= (int)uVar5) {
+      return 0;
+    }
+    if (((*(byte *)(lVar4 + 0x12f) & 2) != 0) && (*(int *)(lVar4 + 0xe0) == 0)) {
+      il2cpp_runtime_class_init(lVar4);
+      lVar4 = DAT_182e4e3b8;
+    }
+    lVar1 = *(longlong *)(*(longlong *)(lVar4 + 0xb8) + 0x38);
+    if (lVar1 == 0) goto LAB_18228e965;
+    if (*(uint *)(lVar1 + 0x18) <= uVar5) {
+      uVar3 = thunk_FUN_1800a7230();
+                    /* WARNING: Subroutine does not return */
+      FUN_1800e6940(uVar3,0);
+    }
+    lVar1 = *(longlong *)(lVar1 + 0x20 + (longlong)(int)uVar5 * 8);
+    if (lVar1 == 0) goto LAB_18228e965;
+    if (*(int *)(lVar1 + 0x18) == 0) {
+      uVar3 = thunk_FUN_1800a7230();
+                    /* WARNING: Subroutine does not return */
+      FUN_1800e6940(uVar3,0);
+    }
+    if ((*(ulonglong *)(lVar1 + 0x20) & uVar2) != 0) break;
+    uVar5 = uVar5 + 1;
+  }
+  if ((int)uVar5 < 0) {
+    return 0;
+  }
+  switch(param_1) {
+  case 3:
+  case 4:
+  case 5:
+  case 6:
+  case 7:
+  case 8:
+  case 9:
+    if (((*(byte *)(lVar4 + 0x12f) & 2) != 0) && (*(int *)(lVar4 + 0xe0) == 0)) {
+      il2cpp_runtime_class_init(lVar4);
+      lVar4 = DAT_182e4e3b8;
+    }
+    lVar4 = *(longlong *)(*(longlong *)(lVar4 + 0xb8) + 0x38);
+    if (lVar4 == 0) goto LAB_18228e965;
+    if (*(uint *)(lVar4 + 0x18) <= uVar5) {
+      uVar3 = thunk_FUN_1800a7230();
+                    /* WARNING: Subroutine does not return */
+      FUN_1800e6940(uVar3,0);
+    }
+    lVar4 = *(longlong *)(lVar4 + 0x20 + (longlong)(int)uVar5 * 8);
+    if (lVar4 == 0) goto LAB_18228e965;
+    if (*(uint *)(lVar4 + 0x18) < 2) {
+      uVar3 = thunk_FUN_1800a7230();
+                    /* WARNING: Subroutine does not return */
+      FUN_1800e6940(uVar3,0);
+    }
+    uVar7 = *(undefined4 *)(lVar4 + 0x28);
+    uVar3 = 3;
+    uVar6 = 9;
+    break;
+  case 10:
+  case 0xb:
+  case 0xc:
+  case 0xd:
+  case 0xe:
+  case 0xf:
+  case 0x10:
+  case 0x11:
+  case 0x12:
+  case 0x13:
+    if (((*(byte *)(lVar4 + 0x12f) & 2) != 0) && (*(int *)(lVar4 + 0xe0) == 0)) {
+      il2cpp_runtime_class_init(lVar4);
+      lVar4 = DAT_182e4e3b8;
+    }
+    lVar4 = *(longlong *)(*(longlong *)(lVar4 + 0xb8) + 0x38);
+    if (lVar4 == 0) goto LAB_18228e965;
+    if (*(uint *)(lVar4 + 0x18) <= uVar5) {
+      uVar3 = thunk_FUN_1800a7230();
+                    /* WARNING: Subroutine does not return */
+      FUN_1800e6940(uVar3,0);
+    }
+    lVar4 = *(longlong *)(lVar4 + 0x20 + (longlong)(int)uVar5 * 8);
+    if (lVar4 == 0) goto LAB_18228e965;
+    if (*(uint *)(lVar4 + 0x18) < 2) {
+      uVar3 = thunk_FUN_1800a7230();
+                    /* WARNING: Subroutine does not return */
+      FUN_1800e6940(uVar3,0);
+    }
+    uVar7 = *(undefined4 *)(lVar4 + 0x28);
+    uVar3 = 10;
+    uVar6 = 0x13;
+    break;
+  case 0x14:
+  case 0x15:
+  case 0x16:
+    if (((*(byte *)(lVar4 + 0x12f) & 2) != 0) && (*(int *)(lVar4 + 0xe0) == 0)) {
+      il2cpp_runtime_class_init(lVar4);
+      lVar4 = DAT_182e4e3b8;
+    }
+    lVar4 = *(longlong *)(*(longlong *)(lVar4 + 0xb8) + 0x38);
+    if (lVar4 == 0) goto LAB_18228e965;
+    if (*(uint *)(lVar4 + 0x18) <= uVar5) {
+      uVar3 = thunk_FUN_1800a7230();
+                    /* WARNING: Subroutine does not return */
+      FUN_1800e6940(uVar3,0);
+    }
+    lVar4 = *(longlong *)(lVar4 + 0x20 + (longlong)(int)uVar5 * 8);
+    if (lVar4 == 0) goto LAB_18228e965;
+    if (*(uint *)(lVar4 + 0x18) < 2) {
+      uVar3 = thunk_FUN_1800a7230();
+                    /* WARNING: Subroutine does not return */
+      FUN_1800e6940(uVar3,0);
+    }
+    uVar7 = *(undefined4 *)(lVar4 + 0x28);
+    uVar3 = 0x14;
+    uVar6 = 0x16;
+    break;
+  case 0x17:
+    if (((*(byte *)(DAT_182e4ed30 + 0x12f) & 2) != 0) && (*(int *)(DAT_182e4ed30 + 0xe0) == 0)) {
+      il2cpp_runtime_class_init(DAT_182e4ed30);
+      lVar4 = DAT_182e4e3b8;
+    }
+    if ((**(longlong **)(DAT_182e4ed30 + 0xb8) != 0) &&
+       (lVar1 = *(longlong *)(**(longlong **)(DAT_182e4ed30 + 0xb8) + 0xe8), lVar1 != 0)) {
+      if (((*(byte *)(lVar4 + 0x12f) & 2) != 0) && (*(int *)(lVar4 + 0xe0) == 0)) {
+        il2cpp_runtime_class_init(lVar4);
+        lVar4 = DAT_182e4e3b8;
+      }
+      lVar4 = *(longlong *)(*(longlong *)(lVar4 + 0xb8) + 0x38);
+      if (lVar4 != 0) {
+        if (*(uint *)(lVar4 + 0x18) <= uVar5) {
+          uVar3 = thunk_FUN_1800a7230();
+                    /* WARNING: Subroutine does not return */
+          FUN_1800e6940(uVar3,0);
+        }
+        lVar4 = *(longlong *)(lVar4 + 0x20 + (longlong)(int)uVar5 * 8);
+        if (lVar4 != 0) {
+          if (*(uint *)(lVar4 + 0x18) < 2) {
+            uVar3 = thunk_FUN_1800a7230();
+                    /* WARNING: Subroutine does not return */
+            FUN_1800e6940(uVar3,0);
+          }
+          if (*(uint *)(lVar1 + 0x18) < 5) {
+            uVar3 = thunk_FUN_1800a7230();
+                    /* WARNING: Subroutine does not return */
+            FUN_1800e6940(uVar3,0);
+          }
+          FUN_182296ef0(param_1,lVar1 + 0x40,*(ulonglong *)(lVar4 + 0x28) & 0xffffffff,1,0);
+          goto switchD_18228e527_default;
+        }
+      }
+    }
+    goto LAB_18228e965;
+  case 0x18:
+  case 0x19:
+  case 0x1a:
+  case 0x1b:
+  case 0x1c:
+    if (((*(byte *)(lVar4 + 0x12f) & 2) != 0) && (*(int *)(lVar4 + 0xe0) == 0)) {
+      il2cpp_runtime_class_init(lVar4);
+      lVar4 = DAT_182e4e3b8;
+    }
+    lVar4 = *(longlong *)(*(longlong *)(lVar4 + 0xb8) + 0x38);
+    if (lVar4 == 0) goto LAB_18228e965;
+    if (*(uint *)(lVar4 + 0x18) <= uVar5) {
+      uVar3 = thunk_FUN_1800a7230();
+                    /* WARNING: Subroutine does not return */
+      FUN_1800e6940(uVar3,0);
+    }
+    lVar4 = *(longlong *)(lVar4 + 0x20 + (longlong)(int)uVar5 * 8);
+    if (lVar4 == 0) goto LAB_18228e965;
+    if (*(uint *)(lVar4 + 0x18) < 2) {
+      uVar3 = thunk_FUN_1800a7230();
+                    /* WARNING: Subroutine does not return */
+      FUN_1800e6940(uVar3,0);
+    }
+    uVar7 = *(undefined4 *)(lVar4 + 0x28);
+    uVar3 = 0x18;
+    uVar6 = 0x1c;
+    break;
+  case 0x1d:
+  case 0x1e:
+  case 0x1f:
+  case 0x20:
+  case 0x21:
+    if (((*(byte *)(lVar4 + 0x12f) & 2) != 0) && (*(int *)(lVar4 + 0xe0) == 0)) {
+      il2cpp_runtime_class_init(lVar4);
+      lVar4 = DAT_182e4e3b8;
+    }
+    lVar4 = *(longlong *)(*(longlong *)(lVar4 + 0xb8) + 0x38);
+    if (lVar4 == 0) goto LAB_18228e965;
+    if (*(uint *)(lVar4 + 0x18) <= uVar5) {
+      uVar3 = thunk_FUN_1800a7230();
+                    /* WARNING: Subroutine does not return */
+      FUN_1800e6940(uVar3,0);
+    }
+    lVar4 = *(longlong *)(lVar4 + 0x20 + (longlong)(int)uVar5 * 8);
+    if (lVar4 == 0) goto LAB_18228e965;
+    if (*(uint *)(lVar4 + 0x18) < 2) {
+      uVar3 = thunk_FUN_1800a7230();
+                    /* WARNING: Subroutine does not return */
+      FUN_1800e6940(uVar3,0);
+    }
+    uVar7 = *(undefined4 *)(lVar4 + 0x28);
+    uVar3 = 0x1d;
+    uVar6 = 0x21;
+    break;
+  default:
+    goto switchD_18228e527_default;
+  }
+  FUN_18228dea0(param_1,uVar3,uVar6,uVar7,param_2,0);
+switchD_18228e527_default:
+  if (((*(byte *)(DAT_182e4c220 + 0x12f) & 2) != 0) && (*(int *)(DAT_182e4c220 + 0xe0) == 0)) {
+    il2cpp_runtime_class_init();
+  }
+  FUN_1822ee830(1);
+  return 1;
+}
+
