@@ -71,6 +71,7 @@ internal static class Program
         GameBindingWriteTests.Run();
         GameBindingEditTests.Run();
         ExplorationWindowTests.Run();
+        LateRegistrationTests.Run();
     }
 
     private static DefaultBindingCandidate Candidate(int context, string actionId, params int[] buttons) =>

@@ -129,6 +129,8 @@ namespace NocturneModernController
             new(StringComparer.OrdinalIgnoreCase);
         private static bool _bindingsLoaded;
         private static bool _bindingsLoadedFromLegacy;
+        private static bool _initialBindingsResolved;
+        private static bool _resolvingBindings;
 
         // Read-only Core state for external mods. Read from the game's main
         // thread (MelonMod.OnUpdate, Harmony patches); values are live, not cached.
@@ -247,82 +249,83 @@ namespace NocturneModernController
             }
 
             Actions[definition.ActionId] = definition;
+            if (_initialBindingsResolved)
+            {
+                ResolveBindings();
+            }
         }
 
+        // Resolves default bindings for every registered action that has no
+        // saved binding, override or conflicting default. Runs once at startup
+        // and again whenever an action is registered after that, so external
+        // mods initialized after Controller still get their defaults. Existing
+        // bindings are never changed; see DefaultBindingResolver.PlanNewDefaults.
         internal static void ResolveBindings()
         {
-            EnsureBindingsLoaded();
-            var registeredActionIds = new HashSet<string>(
-                Actions.Keys,
-                StringComparer.OrdinalIgnoreCase);
-            var savedActionContexts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var occupiedSlots = new HashSet<string>(StringComparer.Ordinal);
-            foreach (ControllerBindingEntry binding in Bindings)
+            if (_resolvingBindings)
             {
-                if (!registeredActionIds.Contains(binding.ActionId))
+                return;
+            }
+            _resolvingBindings = true;
+            try
+            {
+                EnsureBindingsLoaded();
+                var registeredActionIds = new HashSet<string>(
+                    Actions.Keys,
+                    StringComparer.OrdinalIgnoreCase);
+                var candidates = Actions.Values.SelectMany(action =>
+                    action.DefaultBindings
+                        .Select(binding => new
+                        {
+                            Binding = binding,
+                            Buttons = NormalizeChord(binding.Buttons)
+                        })
+                        .Where(item =>
+                            IsSingleContext(item.Binding.Context) &&
+                            item.Buttons.Count > 0)
+                        .Select(item => new DefaultBindingCandidate
+                        {
+                            Context = (int)item.Binding.Context,
+                            Buttons = item.Buttons.Select(button => (int)button).ToArray(),
+                            ActionId = action.ActionId
+                        }));
+
+                foreach (DefaultBindingCandidate resolved in DefaultBindingResolver.PlanNewDefaults(
+                             registeredActionIds,
+                             Bindings.Select(ToExistingBinding),
+                             SavedBindingConflicts
+                                 .SelectMany(conflict => conflict.Bindings)
+                                 .Select(ToExistingBinding),
+                             BindingOverrides
+                                 .Where(entry => entry.State == "Unassigned")
+                                 .Select(entry => DefaultBindingResolver.ActionContextKey(
+                                     entry.Context,
+                                     entry.ActionId)),
+                             candidates))
                 {
-                    continue;
+                    Bindings.Add(new ControllerBindingEntry
+                    {
+                        Context = (ControllerContext)resolved.Context,
+                        Buttons = resolved.Buttons.Select(button => (ControllerButton)button).ToList(),
+                        ActionId = resolved.ActionId,
+                        Source = "Default"
+                    });
                 }
 
-                savedActionContexts.Add(DefaultBindingResolver.ActionContextKey(
-                    (int)binding.Context,
-                    binding.ActionId));
-                occupiedSlots.Add(DefaultBindingResolver.SlotKey(
-                    (int)binding.Context,
-                    NormalizeChord(binding.Buttons).Select(button => (int)button)));
+                SaveSnapshots();
+                _initialBindingsResolved = true;
             }
-            foreach (ControllerBindingEntry binding in SavedBindingConflicts
-                         .SelectMany(conflict => conflict.Bindings))
+            finally
             {
-                if (registeredActionIds.Contains(binding.ActionId))
-                {
-                    savedActionContexts.Add(DefaultBindingResolver.ActionContextKey(
-                        (int)binding.Context,
-                        binding.ActionId));
-                }
+                _resolvingBindings = false;
             }
-
-            var unassignedOverrides = new HashSet<string>(
-                BindingOverrides
-                    .Where(entry => entry.State == "Unassigned")
-                    .Select(entry => DefaultBindingResolver.ActionContextKey(
-                        entry.Context,
-                        entry.ActionId)),
-                StringComparer.OrdinalIgnoreCase);
-            var candidates = Actions.Values.SelectMany(action =>
-                action.DefaultBindings
-                    .Select(binding => new
-                    {
-                        Binding = binding,
-                        Buttons = NormalizeChord(binding.Buttons)
-                    })
-                    .Where(item =>
-                        IsSingleContext(item.Binding.Context) &&
-                        item.Buttons.Count > 0)
-                    .Select(item => new DefaultBindingCandidate
-                    {
-                        Context = (int)item.Binding.Context,
-                        Buttons = item.Buttons.Select(button => (int)button).ToArray(),
-                        ActionId = action.ActionId
-                    }));
-
-            foreach (DefaultBindingCandidate resolved in DefaultBindingResolver.Resolve(
-                         candidates,
-                         savedActionContexts,
-                         occupiedSlots,
-                         unassignedOverrides))
-            {
-                Bindings.Add(new ControllerBindingEntry
-                {
-                    Context = (ControllerContext)resolved.Context,
-                    Buttons = resolved.Buttons.Select(button => (ControllerButton)button).ToList(),
-                    ActionId = resolved.ActionId,
-                    Source = "Default"
-                });
-            }
-
-            SaveSnapshots();
         }
+
+        private static DefaultBindingResolver.ExistingBinding ToExistingBinding(ControllerBindingEntry binding) =>
+            new(
+                (int)binding.Context,
+                binding.ActionId,
+                NormalizeChord(binding.Buttons).Select(button => (int)button).ToArray());
 
         public static IReadOnlyList<ControllerActionDefinition> GetRegisteredActions() =>
             Actions.Values.OrderBy(action => action.ModId).ThenBy(action => action.DisplayName).ToArray();
