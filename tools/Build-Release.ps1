@@ -1,93 +1,160 @@
 param(
-    [string]$Version = '2.0.3',
-    [switch]$NoBuild
+    # Commit, tag or branch to package. Resolved to a commit id before building.
+    [string]$Ref = 'HEAD',
+    # Defaults to <Version> in NocturneModernController.csproj at $Ref.
+    [string]$Version = ''
 )
+
+# Reproducible release build.
+#
+# The release is built from a fresh temporary worktree of $Ref, never from the
+# caller's working tree, so uncommitted/untracked files and working-tree line
+# endings cannot leak into the package. Compilation uses
+# ContinuousIntegrationBuild + PathMap so the temporary path is not embedded,
+# and the ZIP is written with a fixed entry order and timestamp. Building the
+# same commit twice, from any location, gives byte-identical DLLs and ZIP.
 
 $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $artifactRoot = Join-Path $repositoryRoot 'artifacts\release'
-$packageName = "NocturneModernController-v$Version"
-$stageRoot = Join-Path $artifactRoot $packageName
-$modsRoot = Join-Path $stageRoot 'Mods'
-$helperRoot = Join-Path $modsRoot 'NocturneModernController.Helper'
-$zipPath = Join-Path $artifactRoot "$packageName.zip"
-
-if (-not $NoBuild) {
-    dotnet build (Join-Path $repositoryRoot 'NocturneModernController.csproj') -c Release --no-restore
-    dotnet build (Join-Path $repositoryRoot 'helper\NocturneModernController.InputHelper.csproj') -c Release --no-restore
-    dotnet build (Join-Path $repositoryRoot 'settings\NocturneModernController.Settings.csproj') -c Release --no-restore
-}
-
-$controllerOutput = Join-Path $repositoryRoot 'bin\Release\net6.0'
-$helperOutput = Join-Path $repositoryRoot 'helper\bin\Release\net6.0'
-$settingsOutput = Join-Path $repositoryRoot 'settings\bin\Release\net6.0-windows'
+# SDL3.dll is a third-party binary kept out of git (tools\ControllerSideRead\Fetch-Sdl.ps1).
 $sdlPath = Join-Path $repositoryRoot 'tools\ControllerSideRead\native\SDL3.dll'
+$zipTimestamp = [DateTimeOffset]::new(2000, 1, 1, 0, 0, 0, [TimeSpan]::Zero)
 
-$requiredFiles = @(
-    (Join-Path $controllerOutput 'NocturneModernController.dll'),
-    (Join-Path $helperOutput 'NocturneModernController.InputHelper.exe'),
-    (Join-Path $helperOutput 'NocturneModernController.InputHelper.dll'),
-    (Join-Path $helperOutput 'NocturneModernController.InputHelper.deps.json'),
-    (Join-Path $helperOutput 'NocturneModernController.InputHelper.runtimeconfig.json'),
-    (Join-Path $settingsOutput 'NocturneModernController.Settings.exe'),
-    (Join-Path $settingsOutput 'NocturneModernController.Settings.dll'),
-    (Join-Path $settingsOutput 'NocturneModernController.Settings.deps.json'),
-    (Join-Path $settingsOutput 'NocturneModernController.Settings.runtimeconfig.json'),
-    $sdlPath,
-    (Join-Path $repositoryRoot 'README.md'),
-    (Join-Path $repositoryRoot 'README_EN.md'),
-    (Join-Path $repositoryRoot 'CHANGELOG.md'),
-    (Join-Path $repositoryRoot 'LICENSE'),
-    (Join-Path $repositoryRoot 'THIRD_PARTY_NOTICES.txt')
-)
-
-foreach ($file in $requiredFiles) {
-    if (-not (Test-Path -LiteralPath $file)) {
-        throw "Required release file is missing: $file"
+function Invoke-Native {
+    param([string]$FilePath, [string[]]$Arguments)
+    & $FilePath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$FilePath $($Arguments -join ' ') failed with exit code $LASTEXITCODE"
     }
 }
 
-if (Test-Path -LiteralPath $stageRoot) {
-    Remove-Item -LiteralPath $stageRoot -Recurse -Force
-}
-if (Test-Path -LiteralPath $zipPath) {
-    Remove-Item -LiteralPath $zipPath -Force
+function Get-Sha256([string]$Path) {
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash
 }
 
-New-Item -ItemType Directory -Path $helperRoot -Force | Out-Null
-
-Copy-Item -LiteralPath (Join-Path $controllerOutput 'NocturneModernController.dll') -Destination $modsRoot
-
-$helperFiles = @(
-    'NocturneModernController.InputHelper.exe',
-    'NocturneModernController.InputHelper.dll',
-    'NocturneModernController.InputHelper.deps.json',
-    'NocturneModernController.InputHelper.runtimeconfig.json'
-)
-foreach ($file in $helperFiles) {
-    Copy-Item -LiteralPath (Join-Path $helperOutput $file) -Destination $helperRoot
+if (-not (Test-Path -LiteralPath $sdlPath)) {
+    throw "SDL3.dll is missing: $sdlPath (run tools\ControllerSideRead\Fetch-Sdl.ps1)"
 }
 
-$settingsFiles = @(
-    'NocturneModernController.Settings.exe',
-    'NocturneModernController.Settings.dll',
-    'NocturneModernController.Settings.deps.json',
-    'NocturneModernController.Settings.runtimeconfig.json'
-)
-foreach ($file in $settingsFiles) {
-    Copy-Item -LiteralPath (Join-Path $settingsOutput $file) -Destination $helperRoot
+$commit = (& git -C $repositoryRoot rev-parse --verify "$Ref^{commit}").Trim()
+if ($LASTEXITCODE -ne 0 -or -not $commit) {
+    throw "Cannot resolve ref '$Ref'"
 }
 
-Copy-Item -LiteralPath $sdlPath -Destination $helperRoot
-Copy-Item -LiteralPath (Join-Path $repositoryRoot 'README.md') -Destination (Join-Path $stageRoot 'README.md')
-Copy-Item -LiteralPath (Join-Path $repositoryRoot 'README_EN.md') -Destination (Join-Path $stageRoot 'README_EN.md')
-Copy-Item -LiteralPath (Join-Path $repositoryRoot 'CHANGELOG.md') -Destination $stageRoot
-Copy-Item -LiteralPath (Join-Path $repositoryRoot 'LICENSE') -Destination (Join-Path $stageRoot 'LICENSE.txt')
-Copy-Item -LiteralPath (Join-Path $repositoryRoot 'THIRD_PARTY_NOTICES.txt') -Destination $stageRoot
+$workRoot = Join-Path ([IO.Path]::GetTempPath()) ("nmc-release-" + [Guid]::NewGuid().ToString('N'))
+$worktreeAdded = $false
+try {
+    Invoke-Native git @('-C', $repositoryRoot, 'worktree', 'add', '--detach', $workRoot, $commit)
+    $worktreeAdded = $true
 
-Compress-Archive -Path (Join-Path $stageRoot '*') -DestinationPath $zipPath -CompressionLevel Optimal
+    if (-not $Version) {
+        [xml]$coreProject = Get-Content -LiteralPath (Join-Path $workRoot 'NocturneModernController.csproj') -Raw
+        $Version = ($coreProject.Project.PropertyGroup | Where-Object { $_.Version } | Select-Object -First 1).Version
+        if (-not $Version) {
+            throw 'Version not found in NocturneModernController.csproj'
+        }
+    }
 
-$hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zipPath).Hash
-Write-Output "Created $zipPath"
-Write-Output "SHA-256: $hash"
+    # MSBuild splits PathMap on '='; the source side must end with a separator.
+    $pathMap = "-p:PathMap=$workRoot\=/_/"
+    $buildOptions = @('-c', 'Release', '--no-incremental', '-nologo', '-warnaserror',
+        '-p:ContinuousIntegrationBuild=true', $pathMap)
+    $projects = @(
+        'NocturneModernController.csproj',
+        'helper\NocturneModernController.InputHelper.csproj',
+        'settings\NocturneModernController.Settings.csproj',
+        'tests\DefaultBindingResolverTests\DefaultBindingResolverTests.csproj'
+    )
+    foreach ($project in $projects) {
+        Invoke-Native dotnet (@('build', (Join-Path $workRoot $project)) + $buildOptions)
+    }
+
+    $testsDll = Join-Path $workRoot 'tests\DefaultBindingResolverTests\bin\Release\net6.0\DefaultBindingResolverTests.dll'
+    Invoke-Native dotnet @($testsDll)
+
+    $controllerOutput = Join-Path $workRoot 'bin\Release\net6.0'
+    $helperOutput = Join-Path $workRoot 'helper\bin\Release\net6.0'
+    $settingsOutput = Join-Path $workRoot 'settings\bin\Release\net6.0-windows'
+
+    # Package path -> source file. PDBs are not shipped.
+    $entries = [ordered]@{
+        'Mods/NocturneModernController.dll' = Join-Path $controllerOutput 'NocturneModernController.dll'
+    }
+    foreach ($file in @('NocturneModernController.InputHelper.exe', 'NocturneModernController.InputHelper.dll',
+            'NocturneModernController.InputHelper.deps.json', 'NocturneModernController.InputHelper.runtimeconfig.json')) {
+        $entries["Mods/NocturneModernController.Helper/$file"] = Join-Path $helperOutput $file
+    }
+    foreach ($file in @('NocturneModernController.Settings.exe', 'NocturneModernController.Settings.dll',
+            'NocturneModernController.Settings.deps.json', 'NocturneModernController.Settings.runtimeconfig.json')) {
+        $entries["Mods/NocturneModernController.Helper/$file"] = Join-Path $settingsOutput $file
+    }
+    $entries['Mods/NocturneModernController.Helper/SDL3.dll'] = $sdlPath
+    $entries['README.md'] = Join-Path $workRoot 'README.md'
+    $entries['README_EN.md'] = Join-Path $workRoot 'README_EN.md'
+    $entries['CHANGELOG.md'] = Join-Path $workRoot 'CHANGELOG.md'
+    $entries['LICENSE.txt'] = Join-Path $workRoot 'LICENSE'
+    $entries['THIRD_PARTY_NOTICES.txt'] = Join-Path $workRoot 'THIRD_PARTY_NOTICES.txt'
+
+    foreach ($source in $entries.Values) {
+        if (-not (Test-Path -LiteralPath $source)) {
+            throw "Required release file is missing: $source"
+        }
+    }
+
+    New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
+    $packageName = "NocturneModernController-v$Version"
+    $zipPath = Join-Path $artifactRoot "$packageName.zip"
+    if (Test-Path -LiteralPath $zipPath) {
+        Remove-Item -LiteralPath $zipPath -Force
+    }
+
+    Add-Type -AssemblyName System.IO.Compression
+    $zipStream = [IO.File]::Open($zipPath, [IO.FileMode]::CreateNew)
+    try {
+        $archive = [IO.Compression.ZipArchive]::new($zipStream, [IO.Compression.ZipArchiveMode]::Create)
+        try {
+            foreach ($name in ($entries.Keys | Sort-Object -CaseSensitive)) {
+                $entry = $archive.CreateEntry($name, [IO.Compression.CompressionLevel]::Optimal)
+                $entry.LastWriteTime = $zipTimestamp
+                $entryStream = $entry.Open()
+                try {
+                    $bytes = [IO.File]::ReadAllBytes($entries[$name])
+                    $entryStream.Write($bytes, 0, $bytes.Length)
+                }
+                finally {
+                    $entryStream.Dispose()
+                }
+            }
+        }
+        finally {
+            $archive.Dispose()
+        }
+    }
+    finally {
+        $zipStream.Dispose()
+    }
+
+    Write-Output "Commit:  $commit"
+    Write-Output "Version: $Version"
+    Write-Output "Created $zipPath"
+    foreach ($name in @('Mods/NocturneModernController.dll',
+            'Mods/NocturneModernController.Helper/NocturneModernController.Settings.dll',
+            'Mods/NocturneModernController.Helper/NocturneModernController.Settings.exe',
+            'Mods/NocturneModernController.Helper/NocturneModernController.InputHelper.dll',
+            'Mods/NocturneModernController.Helper/NocturneModernController.InputHelper.exe',
+            'Mods/NocturneModernController.Helper/SDL3.dll')) {
+        Write-Output ("SHA-256 {0}: {1}" -f $name, (Get-Sha256 $entries[$name]))
+    }
+    Write-Output "SHA-256 ${packageName}.zip: $(Get-Sha256 $zipPath)"
+}
+finally {
+    if ($worktreeAdded) {
+        & git -C $repositoryRoot worktree remove --force $workRoot
+    }
+    if (Test-Path -LiteralPath $workRoot) {
+        Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    & git -C $repositoryRoot worktree prune
+}
