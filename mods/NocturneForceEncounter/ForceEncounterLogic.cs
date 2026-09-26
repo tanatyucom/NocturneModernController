@@ -9,6 +9,15 @@ namespace NocturneForceEncounter
         TimedOut
     }
 
+    // Exactly one input source is read per frame: the Controller action
+    // (player's key config) when the integration is active, otherwise the
+    // game's own X button. Never both, so one press cannot request twice.
+    internal static class ForceEncounterInput
+    {
+        internal static bool ReadHeld(bool integrationActive, Func<bool> controllerHeld, Func<bool> standaloneHeld) =>
+            integrationActive ? controllerHeld() : standaloneHeld();
+    }
+
     // Request state of Force Encounter, moved unchanged from Controller's
     // built-in ForceEncounterRuntime. Pure: callers pass in the game/Controller
     // state, so the rules can be unit tested.

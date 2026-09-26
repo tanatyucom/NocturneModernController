@@ -1,5 +1,4 @@
 using System;
-using System.Linq;
 using HarmonyLib;
 using Il2Cpp;
 using MelonLoader;
@@ -13,16 +12,16 @@ using MelonLoader;
 
 namespace NocturneForceEncounter
 {
-    // Force Encounter as a gameplay mod for the Nocturne Modern Controller
-    // ecosystem: Controller provides input bindings, exploration state and the
-    // Settings integration; this mod owns the feature and its native hook.
+    // Force Encounter as a standalone mod: press X while exploring to request a
+    // battle through the game's own encounter check. With Nocturne Modern
+    // Controller installed it also appears in Controller's key config and
+    // Settings (optional integration, see ModernControllerIntegration).
     public sealed class ForceEncounterMod : MelonMod
     {
-        internal const string ModVersion = "0.1.0";
-        private const string ControllerAssembly = "NocturneModernController";
+        internal const string ModVersion = "0.2.0";
 
         internal static ForceEncounterLogic Logic { get; } = new();
-        internal static bool Available { get; private set; }
+        private static ModernControllerIntegration? _integration;
 
         public override void OnInitializeMelon()
         {
@@ -33,65 +32,59 @@ namespace NocturneForceEncounter
             }
         }
 
-        // After every mod's OnInitializeMelon, so Controller has loaded its
-        // settings and bindings whatever the mod load order is.
+        // After every mod's OnInitializeMelon, so Controller (if installed) has
+        // loaded its settings and bindings whatever the mod load order is.
         public override void OnLateInitializeMelon()
         {
-            if (!AppDomain.CurrentDomain.GetAssemblies().Any(assembly =>
-                    string.Equals(assembly.GetName().Name, ControllerAssembly, StringComparison.OrdinalIgnoreCase)))
+            ModernControllerIntegration? integration = ModernControllerIntegration.TryCreate(
+                ControllerAssembly.Find(), out string reason);
+            if (integration != null)
             {
-                LoggerInstance.Warning(
-                    "[NocturneForceEncounter] Nocturne Modern Controller is not installed; Force Encounter is disabled.");
-                return;
+                try
+                {
+                    integration.Register(
+                        () => ForceEncounterSettings.Current.Enabled,
+                        enabled =>
+                        {
+                            ForceEncounterSettings.Current.Enabled = enabled;
+                            ForceEncounterSettings.Save();
+                            return true;
+                        },
+                        ModVersion);
+                    _integration = integration;
+                }
+                catch (Exception exception)
+                {
+                    reason = "Nocturne Modern Controller integration failed (" +
+                        (exception.InnerException ?? exception).GetType().Name + ")";
+                }
             }
-
-            try
-            {
-                ControllerBridge.Register();
-                Available = true;
-                string binding = string.Join(", ", ControllerBridge.GetBindings()
-                    .Where(entry => entry.ActionId == ControllerBridge.ActionId)
-                    .Select(entry => $"{entry.Context} [{string.Join("+", entry.Buttons)}] ({entry.Source})"));
-                LoggerInstance.Msg(
-                    $"[NocturneForceEncounter] Loaded; enabled={ForceEncounterSettings.Current.Enabled} " +
-                    $"binding={(binding.Length == 0 ? "none" : binding)}.");
-            }
-            catch (Exception exception)
-            {
-                LoggerInstance.Warning(
-                    "[NocturneForceEncounter] Controller integration failed (" + exception.GetType().Name +
-                    ": " + exception.Message + "); Force Encounter is disabled.");
-            }
+            LoggerInstance.Msg(
+                $"[NocturneForceEncounter] Loaded v{ModVersion}; enabled={ForceEncounterSettings.Current.Enabled}; " +
+                (_integration != null ? "input=Controller key config (" : "input=X, standalone (") + reason + ").");
         }
 
         public override void OnUpdate()
         {
-            if (!Available)
-            {
-                return;
-            }
-
-            bool held;
-            bool explorationActive;
+            bool enabled = ForceEncounterSettings.Current.Enabled;
+            bool explorationActive = ExplorationTracker.IsExplorationActive;
             bool settingsOpen;
+            bool held;
             try
             {
-                explorationActive = ControllerBridge.IsExplorationActive;
-                settingsOpen = ControllerBridge.IsSettingsOpen;
-                held = ForceEncounterSettings.Current.Enabled && explorationActive && !settingsOpen &&
-                    ControllerBridge.IsHeld();
+                settingsOpen = _integration?.IsSettingsOpen ?? false;
+                held = enabled && explorationActive && !settingsOpen &&
+                    ForceEncounterInput.ReadHeld(
+                        _integration != null,
+                        () => _integration!.IsHeld(),
+                        StandaloneInput.IsXHeld);
             }
             catch (Exception)
             {
                 return;
             }
 
-            switch (Logic.Sample(
-                        ForceEncounterSettings.Current.Enabled,
-                        explorationActive,
-                        settingsOpen,
-                        held,
-                        Environment.TickCount))
+            switch (Logic.Sample(enabled, explorationActive, settingsOpen, held, Environment.TickCount))
             {
                 case ForceEncounterEvent.Requested:
                     LoggerInstance.Msg("[NocturneForceEncounter] Q8 FORCE-ENCOUNTER requested.");
@@ -109,10 +102,7 @@ namespace NocturneForceEncounter
     {
         private static void Prefix(ref float __1)
         {
-            if (ForceEncounterMod.Available && ForceEncounterMod.Logic.IsRequestPending)
-            {
-                ForceEncounterMod.Logic.BoostNextNormalCheck(ref __1, ControllerBridge.IsExplorationActive);
-            }
+            ForceEncounterMod.Logic.BoostNextNormalCheck(ref __1, ExplorationTracker.IsExplorationActive);
         }
 
         private static void Postfix(int __result)

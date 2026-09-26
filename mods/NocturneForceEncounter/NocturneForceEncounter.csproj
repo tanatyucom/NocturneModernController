@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <TargetFramework>net6.0</TargetFramework>
     <AssemblyName>NocturneForceEncounter</AssemblyName>
     <RootNamespace>NocturneForceEncounter</RootNamespace>
@@ -15,11 +15,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Controller ecosystem mod: uses ModernControllerApi at runtime; the
-         Controller DLL itself is installed separately and never copied here. -->
-    <ProjectReference Include="..\..\NocturneModernController.csproj">
-      <Private>false</Private>
-    </ProjectReference>
+    <!-- Standalone: no reference to NocturneModernController.dll. The optional
+         Controller integration is bound by reflection at runtime; the
+         exploration rule is shared as source only. -->
+    <Compile Include="..\..\shared\ExplorationWindow.cs" Link="ExplorationWindow.cs" />
     <Reference Include="MelonLoader">
       <HintPath>$(GameDir)\MelonLoader\net6\MelonLoader.dll</HintPath>
       <Private>false</Private>

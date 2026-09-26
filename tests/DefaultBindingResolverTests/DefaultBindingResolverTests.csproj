@@ -17,5 +17,7 @@
     <Compile Include="..\..\shared\GameBindingEdit.cs" Link="GameBindingEdit.cs" />
     <Compile Include="..\..\shared\ExplorationWindow.cs" Link="ExplorationWindow.cs" />
     <Compile Include="..\..\mods\NocturneForceEncounter\ForceEncounterLogic.cs" Link="ForceEncounterLogic.cs" />
+    <Compile Include="..\..\mods\NocturneForceEncounter\ForceEncounterSettings.cs" Link="ForceEncounterSettings.cs" />
+    <Compile Include="..\..\mods\NocturneForceEncounter\ModernControllerIntegration.cs" Link="ModernControllerIntegration.cs" />
   </ItemGroup>
 </Project>

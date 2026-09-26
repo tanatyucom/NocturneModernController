@@ -73,6 +73,7 @@ internal static class Program
         ExplorationWindowTests.Run();
         LateRegistrationTests.Run();
         ForceEncounterLogicTests.Run();
+        ForceEncounterStandaloneTests.Run();
     }
 
     private static DefaultBindingCandidate Candidate(int context, string actionId, params int[] buttons) =>
