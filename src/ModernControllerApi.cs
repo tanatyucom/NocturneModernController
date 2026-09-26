@@ -130,6 +130,26 @@ namespace NocturneModernController
         private static bool _bindingsLoaded;
         private static bool _bindingsLoadedFromLegacy;
 
+        // Read-only Core state for external mods. Read from the game's main
+        // thread (MelonMod.OnUpdate, Harmony patches); values are live, not cached.
+
+        // True while the player is in field exploration: the field update
+        // (fldPlayer.fldPlayerCalc) ran within the last 100 ms. False in
+        // battle, menus, events, loading and while the Settings window is
+        // open (the game is minimized), and on the first frames after it closes.
+        public static bool IsExplorationActive => ExplorationState.IsExplorationActive;
+
+        // True from the moment Controller launches the Settings window until
+        // that Settings process has exited. Mod actions should not run while
+        // this is true. It does not cover the time after Settings closes until
+        // exploration resumes; check IsExplorationActive for that.
+        public static bool IsSettingsOpen => SettingsGuiController.IsOpen;
+
+        // True when Controller's UI language resolves to Japanese (explicit
+        // setting, or "Auto" on a Japanese Windows UI culture); false means
+        // English. Updated when Settings closes.
+        public static bool UseJapaneseUi => ControllerSettings.UseJapanese;
+
         public static void RegisterFeatureProvider(IModernFeatureProvider provider)
         {
             if (provider == null || string.IsNullOrWhiteSpace(provider.ProviderId) ||
