@@ -19,11 +19,8 @@ namespace NocturneModernController
             BuiltInControllerActions.Register(SettingsGuiController.IsAvailable);
             ModernControllerApi.ResolveBindings();
             SdlRightStickInput.Initialize(LoggerInstance);
-            HarmonyInstance.CreateClassProcessor(typeof(FieldDashPatch)).Patch();
-            HarmonyInstance.CreateClassProcessor(typeof(PuzzleLogicalTurnPatch)).Patch();
-            HarmonyInstance.CreateClassProcessor(typeof(FormationFlagProbe)).Patch();
-            HarmonyInstance.CreateClassProcessor(typeof(NativeRightStickCameraPatch)).Patch();
-            HarmonyInstance.CreateClassProcessor(typeof(ForceEncounterNativeCheckPatch)).Patch();
+            // [HarmonyPatch] classes are applied by MelonLoader's automatic
+            // PatchAll; patching them here as well registered every patch twice.
             LoggerInstance.Msg("[NocturneModernController] Dash loaded: hold LT/RT/P; press LT+RT to toggle dash keep.");
             LoggerInstance.Msg("[NocturneModernController] Native right-stick dungeon camera loaded; legacy LB/RB field turn suppressed, BATTLE untouched.");
         }
