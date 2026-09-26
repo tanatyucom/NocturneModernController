@@ -46,7 +46,7 @@ namespace NocturneModernController
                 {
                     QuickHealRuntimeProbe.Sample();
                 }
-                if (ControllerSettings.Current.ForceEncounterEnabled)
+                if (ControllerSettings.Current.ForceEncounterEnabled && !ForceEncounterHandoff.ExternalActive)
                 {
                     ForceEncounterRuntime.Sample();
                 }

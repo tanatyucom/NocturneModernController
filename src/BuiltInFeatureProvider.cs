@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace NocturneModernController
 {
@@ -32,7 +33,7 @@ namespace NocturneModernController
                 Feature("smart_auto", "Smart Auto Battle",
                     ja ? "弱点・耐性・MP・通常攻撃予測を使って標準Autoのコマンドを選択します。" : "Choose standard Auto commands using weaknesses, resistances, MP, and attack predictions.",
                     "Gameplay Change", settings.SmartAutoEnabled, 50)
-            };
+            }.Where(feature => feature.Id != "force_encounter" || !ForceEncounterHandoff.ExternalActive).ToArray();
         }
 
         public bool SetFeatureEnabled(string featureId, bool enabled)
