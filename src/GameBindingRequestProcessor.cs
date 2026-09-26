@@ -41,7 +41,7 @@ namespace NocturneModernController
             {
                 return;
             }
-            if (!FieldDashPatch.IsExplorationActive &&
+            if (!ExplorationState.IsExplorationActive &&
                 unchecked(Environment.TickCount - _pendingSinceTick) < ReadyWaitMilliseconds)
             {
                 return;

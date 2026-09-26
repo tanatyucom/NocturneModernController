@@ -180,7 +180,7 @@ namespace NocturneModernController
     // src/NativeGameBindingPort.cs and by a fake in the tests.
     internal interface INativeGameBindingPort
     {
-        // FieldDashPatch.IsExplorationActive && authoritative snapshot captured.
+        // ExplorationState.IsExplorationActive && authoritative snapshot captured.
         bool IsReady { get; }
         bool IsSupportedGameBuild { get; }
         int GetConfigGamePad(int index);

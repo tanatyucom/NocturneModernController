@@ -17,7 +17,7 @@ namespace NocturneModernController
 
         internal static void Sample()
         {
-            if (!FieldDashPatch.IsExplorationActive)
+            if (!ExplorationState.IsExplorationActive)
             {
                 _wasHeld = false;
                 _healSequenceActive = false;

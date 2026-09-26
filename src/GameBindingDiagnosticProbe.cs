@@ -20,7 +20,7 @@ namespace NocturneModernController
     // screen" or "native Controller Key Config screen is open" (see
     // investigations/NATIVE_GAMEPAD_CONFIG_DATAFLOW_20260922.md §17-18 for why
     // those would require a new native hook to detect safely). The only signal
-    // with real-hardware confirmation is FieldDashPatch.IsExplorationActive
+    // with real-hardware confirmation is ExplorationState.IsExplorationActive
     // (already Harmony-patched elsewhere for unrelated features; reused here,
     // not re-hooked). Phases this probe cannot honestly distinguish are reported
     // as UNKNOWN rather than guessed as TITLE/CONFIG; the elapsed-time field lets
@@ -44,7 +44,7 @@ namespace NocturneModernController
 
         internal static void Sample()
         {
-            bool explorationActive = FieldDashPatch.IsExplorationActive;
+            bool explorationActive = ExplorationState.IsExplorationActive;
 
             // Checked every tick (not throttled) so the value right at the FIELD
             // boundary is never missed, per the diagnostic spec's request to

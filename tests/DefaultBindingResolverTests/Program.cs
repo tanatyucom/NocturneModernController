@@ -70,6 +70,7 @@ internal static class Program
         VerifyGameActionBindingDisplay();
         GameBindingWriteTests.Run();
         GameBindingEditTests.Run();
+        ExplorationWindowTests.Run();
     }
 
     private static DefaultBindingCandidate Candidate(int context, string actionId, params int[] buttons) =>

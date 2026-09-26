@@ -121,7 +121,7 @@ namespace NocturneModernController
 
             TraceTriggerKeys();
 
-            if (!FieldDashPatch.IsExplorationActive ||
+            if (!ExplorationState.IsExplorationActive ||
                 !ModernControllerApi.GameActionBindingsReady ||
                 SettingsGuiController.IsOpen)
             {
@@ -186,7 +186,7 @@ namespace NocturneModernController
                 return;
             }
 
-            string gate = $"foreground={IsGameForeground()} exploration={FieldDashPatch.IsExplorationActive} " +
+            string gate = $"foreground={IsGameForeground()} exploration={ExplorationState.IsExplorationActive} " +
                 $"bindingsReady={ModernControllerApi.GameActionBindingsReady} settingsOpen={SettingsGuiController.IsOpen} " +
                 $"armed={_readyAnnounced} waitForRelease={_waitForRelease}";
             if (keys == _traceKeys && gate == _traceGate)
@@ -351,7 +351,7 @@ namespace NocturneModernController
             Log("PRECHECK NOTICE: the native Config screen cannot be detected safely; " +
                 "this PoC only accepts triggers while field exploration is active. Keep the Config screen closed.");
 
-            if (!FieldDashPatch.IsExplorationActive || !ModernControllerApi.GameActionBindingsReady)
+            if (!ExplorationState.IsExplorationActive || !ModernControllerApi.GameActionBindingsReady)
             {
                 throw new PocFailure("exploration/authoritative readiness lost");
             }

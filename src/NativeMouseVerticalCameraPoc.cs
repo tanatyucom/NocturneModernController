@@ -11,7 +11,7 @@ namespace NocturneModernController
     /// </summary>
     internal static class NativeMouseVerticalCameraPoc
     {
-        internal static bool ExplorationActive => FieldDashPatch.IsExplorationActive;
+        internal static bool ExplorationActive => ExplorationState.IsExplorationActive;
     }
 
     [HarmonyPatch(typeof(fldCamera), "MouseDraggCheck")]

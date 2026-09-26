@@ -17,7 +17,7 @@ namespace NocturneModernController
 
         internal static void Sample()
         {
-            if (_logged || !FieldDashPatch.IsExplorationActive)
+            if (_logged || !ExplorationState.IsExplorationActive)
             {
                 return;
             }

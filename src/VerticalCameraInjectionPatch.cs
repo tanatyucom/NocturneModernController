@@ -27,7 +27,7 @@ namespace NocturneModernController
         [HarmonyPriority(Priority.Last)]
         private static void Postfix()
         {
-            if (!FieldDashPatch.IsExplorationActive)
+            if (!ExplorationState.IsExplorationActive)
             {
                 _hasTarget = false;
                 return;

@@ -36,7 +36,7 @@ namespace NocturneModernController
                 SmartAutoBattleTelemetry.Sample();
                 SmartAutoBattleRuntime.Sample();
             }
-            bool explorationActive = FieldDashPatch.IsExplorationActive;
+            bool explorationActive = ExplorationState.IsExplorationActive;
             bool modActionsActive = explorationActive && !SettingsGuiController.IsOpen;
             ExternalInputBridge.UpdateGameContext(modActionsActive);
             ExplorationCursorController.Update(modActionsActive);

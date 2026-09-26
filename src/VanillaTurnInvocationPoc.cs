@@ -82,7 +82,7 @@ namespace NocturneModernController
         {
             if (__0 != 0 ||
                 !ControllerSettings.Current.RightStickEnabled ||
-                !FieldDashPatch.IsExplorationActive ||
+                !ExplorationState.IsExplorationActive ||
                 !LegacyShoulderTurnSuppression.IsSuppressedExplorationAction(__1))
             {
                 return true;

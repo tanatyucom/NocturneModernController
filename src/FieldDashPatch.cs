@@ -35,10 +35,6 @@ namespace NocturneModernController
         private static bool _loggedUnsupported;
         private static bool _dashLatched;
         private static bool _comboWasHeld;
-        private static int _lastExplorationTick;
-
-        internal static bool IsExplorationActive =>
-            unchecked(Environment.TickCount - _lastExplorationTick) <= 100;
 
         [DllImport("user32.dll")]
         private static extern short GetAsyncKeyState(int virtualKey);
@@ -86,7 +82,6 @@ namespace NocturneModernController
 
         private static void Prefix()
         {
-            _lastExplorationTick = Environment.TickCount;
             RestoreSpeeds();
             if (SettingsGuiController.IsOpen || !ControllerSettings.Current.DashEnabled)
             {

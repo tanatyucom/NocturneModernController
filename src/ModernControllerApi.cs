@@ -423,7 +423,7 @@ namespace NocturneModernController
         // sweep, captured before dds3TitleInit had even run, returned a
         // stale/default value for index=7 instead of the player's actual
         // setting). The only readiness signal with real-hardware confirmation
-        // is FieldDashPatch.IsExplorationActive == true (the same gate
+        // is ExplorationState.IsExplorationActive == true (the same gate
         // GameBindingProbe used for the A/B/A that correctly tracked Y/X/Y).
         // SaveSnapshots() still writes whatever partial/default result is
         // available at startup so the file always exists; only a capture
@@ -490,7 +490,7 @@ namespace NocturneModernController
         }
 
         // Read-only readiness retry, gated on the one condition with
-        // real-hardware confirmation: FieldDashPatch.IsExplorationActive.
+        // real-hardware confirmation: ExplorationState.IsExplorationActive.
         // GetConfigGamePad is not even called while inactive. Frame-gated
         // once active, to avoid calling the native getter 34x every frame;
         // stops permanently after the first fully successful sweep taken
@@ -502,7 +502,7 @@ namespace NocturneModernController
                 return;
             }
 
-            if (!FieldDashPatch.IsExplorationActive)
+            if (!ExplorationState.IsExplorationActive)
             {
                 return;
             }
