@@ -26,9 +26,6 @@ namespace NocturneModernController
                 Feature("quick_heal", "Quick Heal",
                     ja ? "探索中に回復スキルを使ってパーティをまとめて回復します。" : "Use learned recovery skills and real MP to heal the party while exploring.",
                     "QoL", settings.QuickHealEnabled, 30),
-                Feature("force_encounter", "Force Encounter",
-                    ja ? "通常エンカウント可能な場所で戦闘開始を要求します。" : "Request a battle only where normal encounters are available.",
-                    "Gameplay Change", settings.ForceEncounterEnabled, 40),
                 Feature("smart_auto", "Smart Auto Battle",
                     ja ? "弱点・耐性・MP・通常攻撃予測を使って標準Autoのコマンドを選択します。" : "Choose standard Auto commands using weaknesses, resistances, MP, and attack predictions.",
                     "Gameplay Change", settings.SmartAutoEnabled, 50)
@@ -43,7 +40,6 @@ namespace NocturneModernController
                 case "right_stick_camera": settings.RightStickEnabled = enabled; break;
                 case "dash": settings.DashEnabled = enabled; break;
                 case "quick_heal": settings.QuickHealEnabled = enabled; break;
-                case "force_encounter": settings.ForceEncounterEnabled = enabled; break;
                 case "smart_auto":
                     settings.SmartAutoEnabled = enabled;
                     if (!enabled) SmartAutoBattleRuntime.Shutdown();

@@ -1289,7 +1289,6 @@ internal sealed class SettingsForm : Form
                 "nocturne-modern-controller.dash" => "Dash",
                 "nocturne-modern-controller.dash-keep" => "Toggle Dash Keep",
                 "nocturne-modern-controller.quick-heal" => "Quick Heal",
-                "nocturne-modern-controller.force-encounter" => "Force Encounter",
                 "nocturne-modern-controller.open-settings" => "Open Settings",
                 _ => _actions.FirstOrDefault(action => action.ActionId == actionId)?.DisplayName ?? actionId
             };
@@ -1317,7 +1316,6 @@ internal sealed class SettingsForm : Form
             "right_stick_camera" => "Use the right stick for dungeon turning and vertical camera control.",
             "dash" => "Increase movement speed in dungeons and on the world map.",
             "quick_heal" => "Use learned recovery skills and real MP to heal the party while exploring.",
-            "force_encounter" => "Request a battle only where normal encounters are available.",
             "smart_auto" => "Choose standard Auto commands using weaknesses, resistances, MP, and attack predictions.",
             _ => feature.Description
         };
@@ -1514,7 +1512,6 @@ internal sealed class AssignmentDialog : Form
             "nocturne-modern-controller.dash" => "Dash",
             "nocturne-modern-controller.dash-keep" => "Toggle Dash Keep",
             "nocturne-modern-controller.quick-heal" => "Quick Heal",
-            "nocturne-modern-controller.force-encounter" => "Force Encounter",
             "nocturne-modern-controller.open-settings" => "Open Settings",
             _ => action.DisplayName
         };

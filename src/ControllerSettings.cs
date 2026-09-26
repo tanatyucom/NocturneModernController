@@ -33,6 +33,10 @@ namespace NocturneModernController
         public bool RightStickEnabled { get; set; } = true;
         public bool DashEnabled { get; set; } = true;
         public bool QuickHealEnabled { get; set; } = true;
+        // Deprecated, migration only: Force Encounter moved to the standalone
+        // NocturneForceEncounter mod, which reads this value once on its first
+        // run. Controller no longer uses it; it is kept only so saving
+        // settings.json does not drop it before that migration happens.
         public bool ForceEncounterEnabled { get; set; } = true;
         public bool SmartAutoEnabled { get; set; } = true;
 
