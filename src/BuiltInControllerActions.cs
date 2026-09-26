@@ -7,7 +7,6 @@ namespace NocturneModernController
         internal const string Dash = "nocturne-modern-controller.dash";
         internal const string DashKeep = "nocturne-modern-controller.dash-keep";
         internal const string QuickHeal = "nocturne-modern-controller.quick-heal";
-        internal const string ForceEncounter = "nocturne-modern-controller.force-encounter";
         internal const string OpenSettings = "nocturne-modern-controller.open-settings";
 
         internal static void Register(bool settingsGuiAvailable)
@@ -51,19 +50,6 @@ namespace NocturneModernController
                 DefaultBindings = new List<ControllerDefaultBinding>
                 {
                     new() { Context = ControllerContext.Field, Buttons = new() { ControllerButton.RB } }
-                }
-            });
-            ModernControllerApi.RegisterAction(new ControllerActionDefinition
-            {
-                ModId = "NocturneModernController",
-                ActionId = ForceEncounter,
-                DisplayName = ja ? "強制エンカウント" : "Force Encounter",
-                Description = ja ? "通常エンカウント可能な場所で標準の遭遇判定を発生させます。" : "Request a standard encounter where normal encounters are available.",
-                Contexts = ControllerContext.Field,
-                Behavior = ControllerActionBehavior.Press,
-                DefaultBindings = new List<ControllerDefaultBinding>
-                {
-                    new() { Context = ControllerContext.Field, Buttons = new() { ControllerButton.X } }
                 }
             });
             if (settingsGuiAvailable)
