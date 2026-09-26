@@ -435,6 +435,35 @@ namespace NocturneModernController
         private static int _gameActionBindingsRetryFrame;
         private const int GameActionBindingsRetryIntervalFrames = 45;
 
+        // Readiness gate for native GAME binding writes (NativeGameBindingPort).
+        internal static bool GameActionBindingsReady => _gameActionBindingsReady;
+
+        // Re-publishes the authoritative GAME binding snapshot after a native
+        // binding write, so the next Settings session shows the new value. Only
+        // replaces the snapshot with a complete sweep; otherwise leaves it as is.
+        internal static void RefreshAuthoritativeGameActionBindings()
+        {
+            if (!_gameActionBindingsReady)
+            {
+                return;
+            }
+            try
+            {
+                GameActionBindingSnapshotResult gameActionBindings = CaptureGameActionBindingsRaw();
+                if (!gameActionBindings.Available ||
+                    gameActionBindings.Entries.Count != GameActionBindingSnapshotReader.SlotCount)
+                {
+                    return;
+                }
+                WriteRegistrySnapshot(new JsonSerializerOptions { WriteIndented = true }, gameActionBindings);
+            }
+            catch (Exception ex)
+            {
+                MelonLoader.MelonLogger.Warning(
+                    $"[GameActionBindingSnapshot] refresh after GAME binding write failed ({ex.GetType().Name})");
+            }
+        }
+
         private static void WriteRegistrySnapshot(
             JsonSerializerOptions options,
             GameActionBindingSnapshotResult? gameActionBindingsOverride = null)
@@ -759,5 +788,9 @@ namespace NocturneModernController
             ModDirectory, "NocturneModernController.features.json");
         internal static string FeatureRequestsPath => Path.Combine(
             ModDirectory, "NocturneModernController.feature-requests.json");
+        internal static string GameBindingRequestPath => Path.Combine(
+            ModDirectory, "NocturneModernController.game-binding-request.json");
+        internal static string GameBindingResultPath => Path.Combine(
+            ModDirectory, "NocturneModernController.game-binding-result.json");
     }
 }

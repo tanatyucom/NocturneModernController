@@ -33,6 +33,17 @@
     <Compile Remove="src\ForceEncounterTelemetry.cs" />
     <Compile Remove="src\CameraVectorProbe.cs" />
     <Compile Remove="src\AnalogChannelTelemetry.cs" />
+    <!-- Native GAME binding write PoC (Y<->X round trip succeeded 2026-09-26) and its
+         diagnostics. Kept as the verified reference for the Settings implementation;
+         see investigations/NATIVE_GAMEPAD_EDIT_DESIGN_20260924.md §12-§13. -->
+    <Compile Remove="src\GameBindingWritePoc.cs" />
+    <Compile Remove="src\GameBindingDiagnosticProbe.cs" />
+    <Compile Remove="src\UiRefreshDiagnosticProbe.cs" />
+    <!-- Read-only A/B probes from the GAME binding read investigation (PadCfg/CommonConfig
+         falsified, GetConfigGamePad confirmed). Production reads go through
+         ModernControllerApi.CaptureGameActionBindingsRaw instead. -->
+    <Compile Remove="src\PadCfgDiagnosticProbe.cs" />
+    <Compile Remove="src\GameBindingProbe.cs" />
 
     <Reference Include="MelonLoader">
       <HintPath>$(GameDir)\MelonLoader\net6\MelonLoader.dll</HintPath>

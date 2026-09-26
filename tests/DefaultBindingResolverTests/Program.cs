@@ -68,6 +68,8 @@ internal static class Program
         VerifyConflictDiagnostics();
         VerifyGameBindingSnapshot();
         VerifyGameActionBindingDisplay();
+        GameBindingWriteTests.Run();
+        GameBindingEditTests.Run();
     }
 
     private static DefaultBindingCandidate Candidate(int context, string actionId, params int[] buttons) =>
@@ -383,10 +385,12 @@ internal static class Program
 
         IReadOnlyList<GameActionBindingDisplayRow> rows =
             GameActionBindingDisplayFormatter.GetConfirmedRows(entries);
-        Equal("2", rows.Count.ToString(), "only fully-confirmed indices must produce a row");
+        Equal("3", rows.Count.ToString(), "every confirmed action must produce a row, whatever its raw value");
         Equal("決定・アクション", rows[0].ActionName, "rows must be ordered by index");
-        Equal("A", rows[0].PhysicalButton, "row must carry the confirmed physical button");
+        Equal("A", rows[0].CurrentButton, "supported raw must show its button name");
         Equal("キャンセル", rows[1].ActionName, "second confirmed index must follow in order");
+        Equal("Unknown (raw=99)", rows[2].CurrentButton, "unsupported raw must stay visible as Unknown");
+        Equal("False", rows[2].CurrentSupported.ToString(), "unknown raw must be flagged unsupported");
 
         var payload = new ActionRegistrySnapshot<string>
         {

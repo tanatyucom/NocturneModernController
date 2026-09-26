@@ -172,6 +172,11 @@ namespace NocturneModernController
                 [30] = new Dictionary<int, string> { [9] = "B", [12] = "X" },
             };
 
+        internal static bool IsConfirmedAction(int index) => ConfirmedActionNames.ContainsKey(index);
+
+        internal static string? GetConfirmedActionName(int index) =>
+            ConfirmedActionNames.TryGetValue(index, out string? name) ? name : null;
+
         internal static GameActionBindingSnapshotResult Capture(Func<int, int> getConfigGamePad)
         {
             var entries = new List<GameActionBindingRawEntry>();
@@ -212,22 +217,54 @@ namespace NocturneModernController
         }
     }
 
-    internal sealed record GameActionBindingDisplayRow(string ActionName, string PhysicalButton);
+    // Product definition, not evidence: the raw codes v1 displays and allows as
+    // GAME binding write targets. They are the codes observed in the A/B/A
+    // index-mapping tests (investigations/GAMEBINDING_INDEX_MAP_20260921.md),
+    // applied to every confirmed action. This does NOT claim the native button
+    // enum is fully decoded; the per-index evidence stays in
+    // GameActionBindingRawEntry.ConfirmedPhysicalButton. Any other code is
+    // shown as "Unknown (raw=N)" and is not offered as a target.
+    internal static class GameBindingSupportedButtons
+    {
+        internal static readonly IReadOnlyList<(int Raw, string Name)> All = new[]
+        {
+            (10, "A"), (9, "B"), (12, "X"), (11, "Y"),
+            (13, "LB"), (14, "LT"), (15, "RB"), (16, "RT"),
+            (17, "L3"), (18, "R3"), (25, "SELECT"), (26, "START"),
+        };
 
-    // Settings-UI display filter: only indices independently A/B/A-confirmed for
-    // both the action name and the physical button resolve to a row here. An
-    // unconfirmed or partially-confirmed index (e.g. a raw value not seen during
-    // A/B/A testing) is intentionally omitted rather than shown ambiguously.
+        private static readonly IReadOnlyDictionary<int, string> ByRaw =
+            All.ToDictionary(button => button.Raw, button => button.Name);
+
+        internal static bool IsSupported(int raw) => ByRaw.ContainsKey(raw);
+
+        internal static string Describe(int raw) =>
+            ByRaw.TryGetValue(raw, out string? name) ? name : $"Unknown (raw={raw})";
+    }
+
+    internal sealed record GameActionBindingDisplayRow(
+        int Index,
+        string ActionName,
+        int CurrentRaw,
+        string CurrentButton,
+        bool CurrentSupported);
+
+    // Settings-UI rows: every confirmed action is shown whatever its current
+    // raw value, so an edit can never make a row disappear. The button label
+    // comes from GameBindingSupportedButtons, not from the per-index evidence.
     internal static class GameActionBindingDisplayFormatter
     {
         internal static IReadOnlyList<GameActionBindingDisplayRow> GetConfirmedRows(
             IEnumerable<GameActionBindingRawEntry> entries) =>
             entries
-                .Where(entry => entry.ConfirmedActionName != null && entry.ConfirmedPhysicalButton != null)
+                .Where(entry => entry.ConfirmedActionName != null)
                 .OrderBy(entry => entry.Index)
                 .Select(entry => new GameActionBindingDisplayRow(
+                    entry.Index,
                     entry.ConfirmedActionName!,
-                    entry.ConfirmedPhysicalButton!))
+                    entry.RawValue,
+                    GameBindingSupportedButtons.Describe(entry.RawValue),
+                    GameBindingSupportedButtons.IsSupported(entry.RawValue)))
                 .ToArray();
     }
 }

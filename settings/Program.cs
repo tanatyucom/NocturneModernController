@@ -112,7 +112,9 @@ internal static class Program
         string features = args.Length > 3 ? args[3] : Path.Combine(Path.GetDirectoryName(settings) ?? string.Empty, "NocturneModernController.features.json");
         string featureRequests = args.Length > 4 ? args[4] : Path.Combine(Path.GetDirectoryName(settings) ?? string.Empty, "NocturneModernController.feature-requests.json");
         int gamePid = args.Length > 5 && int.TryParse(args[5], out int parsedPid) ? parsedPid : 0;
-        Application.Run(new SettingsForm(settings, registry, bindings, features, featureRequests, gamePid));
+        string gameBindingRequest = args.Length > 6 ? args[6] : Path.Combine(Path.GetDirectoryName(settings) ?? string.Empty, "NocturneModernController.game-binding-request.json");
+        string gameBindingResult = args.Length > 7 ? args[7] : Path.Combine(Path.GetDirectoryName(settings) ?? string.Empty, "NocturneModernController.game-binding-result.json");
+        Application.Run(new SettingsForm(settings, registry, bindings, features, featureRequests, gamePid, gameBindingRequest, gameBindingResult));
     }
 }
 
@@ -125,8 +127,17 @@ internal sealed class SettingsForm : Form
     private readonly List<ActionDefinition> _actions;
     private readonly List<GameBindingSnapshotEntry> _gameBindings;
     private readonly bool _gameBindingsAvailable;
-    private readonly IReadOnlyList<GameActionBindingDisplayRow> _gameActionBindingRows;
-    private readonly bool _gameActionBindingsAvailable;
+    private readonly GameBindingEditModel _gameBindingEdit;
+    private readonly string _gameBindingRequestPath;
+    private readonly string? _gameBindingLastResult;
+    private readonly bool _gameBindingLastResultOk;
+    private readonly Dictionary<int, ComboBox> _gameBindingSelectors = new();
+    private readonly Label _gameBindingStatus = new Label { AutoSize = false, Size = new Size(640, 44), ForeColor = Color.Gainsboro };
+    private readonly Button _gameBindingApply = new Button { Size = new Size(105, 32), BackColor = Color.FromArgb(74, 204, 188) };
+    private readonly Button _gameBindingCancel = new Button { Size = new Size(105, 32) };
+    private bool _gameBindingRequestQueued;
+    private bool _gameBindingSelectorsResetting;
+    private bool _savedAndClosing;
     private readonly List<BindingEntry> _bindings;
     private readonly List<BindingOverrideEntry> _bindingOverrides;
     private readonly List<SavedBindingConflict<BindingEntry>> _savedBindingConflicts;
@@ -149,7 +160,8 @@ internal sealed class SettingsForm : Form
     private readonly ComboBox _uiLanguage = NewCombo();
     private readonly bool _japanese;
 
-    internal SettingsForm(string settingsPath, string registryPath, string bindingsPath, string featuresPath, string featureRequestsPath, int gamePid)
+    internal SettingsForm(string settingsPath, string registryPath, string bindingsPath, string featuresPath, string featureRequestsPath, int gamePid,
+        string gameBindingRequestPath, string gameBindingResultPath)
     {
         _settingsPath = settingsPath;
         _bindingsPath = bindingsPath;
@@ -159,11 +171,13 @@ internal sealed class SettingsForm : Form
         _actions = actionSnapshot.Actions;
         _gameBindings = actionSnapshot.GameBindings;
         _gameBindingsAvailable = actionSnapshot.GameBindingsAvailable;
-        _gameActionBindingsAvailable = actionSnapshot.GameActionBindingsAvailable &&
-            actionSnapshot.GameActionBindingsAuthoritative;
-        _gameActionBindingRows = _gameActionBindingsAvailable
-            ? GameActionBindingDisplayFormatter.GetConfirmedRows(actionSnapshot.GameActionBindingsRaw)
-            : Array.Empty<GameActionBindingDisplayRow>();
+        _gameBindingEdit = new GameBindingEditModel(
+            actionSnapshot.GameActionBindingsRaw,
+            actionSnapshot.GameActionBindingsAvailable && actionSnapshot.GameActionBindingsAuthoritative);
+        _gameBindingRequestPath = gameBindingRequestPath;
+        // A request left from an earlier session was never confirmed by OK / Save
+        // in this one; never let it apply later.
+        TryDeleteFile(_gameBindingRequestPath);
         BindingLoadResult<BindingEntry> loadedBindings = ReadBindings(bindingsPath);
         _bindings = loadedBindings.Bindings;
         _bindingOverrides = loadedBindings.Overrides;
@@ -175,6 +189,13 @@ internal sealed class SettingsForm : Form
             (initialSettings.UiLanguage.Equals("Auto", StringComparison.OrdinalIgnoreCase) &&
              CultureInfo.CurrentUICulture.TwoLetterISOLanguageName.Equals("ja", StringComparison.OrdinalIgnoreCase));
         _padPanel.Japanese = _japanese;
+        GameBindingWriteResult? lastResult = GameBindingResultFile.Consume(gameBindingResultPath);
+        if (lastResult != null)
+        {
+            _gameBindingLastResult = GameBindingResultMessages.Describe(lastResult, _japanese);
+            _gameBindingLastResultOk = lastResult.Status == GameBindingWriteStatus.Success ||
+                lastResult.Status == GameBindingWriteStatus.Validated;
+        }
 
         Text = L("Nocturne Modern Controller - 統合キーコンフィグ", "Nocturne Modern Controller - Settings");
         ClientSize = new Size(940, 650);
@@ -198,6 +219,14 @@ internal sealed class SettingsForm : Form
         RefreshPadLabels();
         Shown += (_, _) => SetGameWindowState(minimize: true);
         FormClosed += (_, _) => SetGameWindowState(minimize: false);
+        FormClosing += (_, _) =>
+        {
+            // Only OK / Save hands a queued GAME binding request to the game.
+            if (_gameBindingRequestQueued && !_savedAndClosing)
+            {
+                TryDeleteFile(_gameBindingRequestPath);
+            }
+        };
     }
 
     private TabPage BuildBindingsPage()
@@ -273,15 +302,28 @@ internal sealed class SettingsForm : Form
 
     private TabPage BuildGameBindingsPage()
     {
-        var page = NewPage(L("GAMEキーコンフィグ（参照専用）", "GAME Bindings (Read-only)"));
-        if (!_gameActionBindingsAvailable)
+        var page = NewPage(L("GAMEキーコンフィグ", "GAME Bindings"));
+        int top = 18;
+        if (_gameBindingLastResult != null)
+        {
+            page.Controls.Add(new Label
+            {
+                Text = L("前回の変更: ", "Last change: ") + _gameBindingLastResult,
+                Location = new Point(22, top),
+                Size = new Size(880, 40),
+                ForeColor = _gameBindingLastResultOk ? Color.FromArgb(74, 204, 188) : Color.FromArgb(240, 170, 90)
+            });
+            top += 44;
+        }
+
+        if (!_gameBindingEdit.Authoritative)
         {
             page.Controls.Add(new Label
             {
                 Text = L(
-                    "ネイティブGAME設定をまだ取得できていません。ゲームを起動し、一度フィールドへ入ってください。",
-                    "Native GAME bindings are not available yet. Start/load the game and enter the field once."),
-                Location = new Point(22, 18),
+                    "ゲームの現在の設定をまだ取得できていません。ゲーム内でフィールドへ移動してから、Settingsを開き直してください。",
+                    "The game's current bindings are not available yet. Move to the field in game, then reopen Settings."),
+                Location = new Point(22, top),
                 Size = new Size(880, 40),
                 ForeColor = Color.Gainsboro
             });
@@ -291,53 +333,187 @@ internal sealed class SettingsForm : Form
         page.Controls.Add(new Label
         {
             Text = L(
-                "ゲーム本体のキーコンフィグです。参照専用で、ここから変更はできません。",
-                "These are the game's own native bindings. They are read-only and cannot be changed here."),
-            Location = new Point(22, 18),
-            AutoSize = true,
+                "ゲーム本体のキーコンフィグです。1回の適用で変更できるのは1項目です。適用後、「OK / 保存」で閉じるとゲームに反映されます。",
+                "The game's own key config. One action can be changed per apply; it takes effect when you close with OK / Save."),
+            Location = new Point(22, top),
+            Size = new Size(880, 40),
             ForeColor = Color.Gainsboro
         });
+        top += 44;
 
-        var list = new FlowLayoutPanel
+        var grid = new TableLayoutPanel
         {
-            Location = new Point(22, 54),
-            Size = new Size(890, 550),
+            Location = new Point(22, top),
+            Size = new Size(760, 400),
             AutoScroll = true,
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
+            ColumnCount = 3,
             BackColor = page.BackColor
         };
-        foreach (GameActionBindingDisplayRow row in _gameActionBindingRows)
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300));
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 200));
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
+        AddGameBindingHeader(grid, L("項目", "Action"), 0);
+        AddGameBindingHeader(grid, L("現在", "Current"), 1);
+        AddGameBindingHeader(grid, L("変更後", "New"), 2);
+
+        int rowIndex = 1;
+        foreach (GameActionBindingDisplayRow row in _gameBindingEdit.Rows)
         {
-            var line = new TableLayoutPanel { Width = 850, Height = 28, ColumnCount = 2 };
-            line.Controls.Add(new Label
+            grid.Controls.Add(new Label { Text = row.ActionName, AutoSize = true, ForeColor = Color.WhiteSmoke, Anchor = AnchorStyles.Left }, 0, rowIndex);
+            grid.Controls.Add(new Label
             {
-                Text = row.ActionName,
+                Text = row.CurrentButton,
                 AutoSize = true,
-                ForeColor = Color.WhiteSmoke,
+                ForeColor = row.CurrentSupported ? Color.FromArgb(74, 204, 188) : Color.FromArgb(240, 170, 90),
                 Anchor = AnchorStyles.Left
-            }, 0, 0);
-            line.Controls.Add(new Label
+            }, 1, rowIndex);
+
+            var selector = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, Anchor = AnchorStyles.Left };
+            foreach ((int raw, string name) in GameBindingEditModel.Options)
             {
-                Text = row.PhysicalButton,
-                AutoSize = true,
-                ForeColor = Color.FromArgb(74, 204, 188),
-                Anchor = AnchorStyles.Left,
-                Margin = new Padding(30, 3, 3, 3)
-            }, 1, 0);
-            list.Controls.Add(line);
+                selector.Items.Add(new GameButtonOption(raw, name));
+            }
+            if (row.CurrentSupported)
+            {
+                selector.SelectedIndex = IndexOfOption(row.CurrentRaw);
+            }
+            selector.Enabled = _gameBindingEdit.IsEditable(row.Index);
+            int actionIndex = row.Index;
+            selector.SelectedIndexChanged += (_, _) =>
+            {
+                if (!_gameBindingSelectorsResetting && selector.SelectedItem is GameButtonOption option)
+                {
+                    _gameBindingEdit.SetSelection(actionIndex, option.Raw);
+                    RefreshGameBindingControls();
+                }
+            };
+            _gameBindingSelectors[row.Index] = selector;
+            grid.Controls.Add(selector, 2, rowIndex);
+            rowIndex++;
         }
-        if (_gameActionBindingRows.Count == 0)
+        if (_gameBindingEdit.Rows.Count == 0)
         {
-            list.Controls.Add(new Label
-            {
-                Text = L("表示できる確定済みの設定がありません。", "No confirmed bindings to display."),
-                AutoSize = true,
-                ForeColor = Color.Gainsboro
-            });
+            grid.Controls.Add(new Label { Text = L("表示できる項目がありません。", "No actions to display."), AutoSize = true, ForeColor = Color.Gainsboro }, 0, 1);
         }
-        page.Controls.Add(list);
+        page.Controls.Add(grid);
+
+        _gameBindingStatus.Location = new Point(22, top + 408);
+        _gameBindingApply.Text = L("適用", "Apply");
+        _gameBindingApply.Location = new Point(680, top + 410);
+        _gameBindingCancel.Text = L("取り消し", "Undo");
+        _gameBindingCancel.Location = new Point(795, top + 410);
+        _gameBindingApply.Click += (_, _) => QueueGameBindingRequest();
+        _gameBindingCancel.Click += (_, _) => CancelGameBindingEdit();
+        page.Controls.Add(_gameBindingStatus);
+        page.Controls.Add(_gameBindingApply);
+        page.Controls.Add(_gameBindingCancel);
+        RefreshGameBindingControls();
         return page;
+    }
+
+    private static void AddGameBindingHeader(TableLayoutPanel grid, string text, int column) =>
+        grid.Controls.Add(new Label { Text = text, AutoSize = true, ForeColor = Color.Silver, Anchor = AnchorStyles.Left }, column, 0);
+
+    private static int IndexOfOption(int raw)
+    {
+        for (int i = 0; i < GameBindingEditModel.Options.Count; i++)
+        {
+            if (GameBindingEditModel.Options[i].Raw == raw)
+            {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private void RefreshGameBindingControls()
+    {
+        if (_gameBindingRequestQueued)
+        {
+            _gameBindingStatus.Text = L(
+                "変更を予約しました。「OK / 保存」で閉じるとゲームに反映され、結果は次にSettingsを開いたときに表示されます。「取り消し」で予約を取り消せます。",
+                "Change queued. Close with OK / Save to apply it in game; the result is shown next time Settings opens. Undo cancels the queued change.");
+            _gameBindingApply.Enabled = false;
+            _gameBindingCancel.Enabled = true;
+            foreach (ComboBox selector in _gameBindingSelectors.Values)
+            {
+                selector.Enabled = false;
+            }
+            return;
+        }
+
+        _gameBindingStatus.Text = _gameBindingEdit.ApplyState switch
+        {
+            GameBindingApplyState.Ready => L("「適用」で変更を予約します。", "Press Apply to queue the change."),
+            GameBindingApplyState.MultipleChanges => L("1回に変更できるのは1項目です。他の変更を元に戻してください。", "Only one action can be changed at a time. Revert the other changes."),
+            GameBindingApplyState.UnknownCurrent => L("現在値が不明な項目は変更できません。", "Actions with an unknown current value cannot be changed."),
+            _ => string.Empty
+        };
+        _gameBindingApply.Enabled = _gameBindingEdit.ApplyState == GameBindingApplyState.Ready;
+        _gameBindingCancel.Enabled = _gameBindingEdit.PendingCount > 0;
+        foreach (KeyValuePair<int, ComboBox> pair in _gameBindingSelectors)
+        {
+            pair.Value.Enabled = _gameBindingEdit.IsEditable(pair.Key);
+        }
+    }
+
+    private void QueueGameBindingRequest()
+    {
+        GameBindingWriteRequest? request = _gameBindingEdit.BuildRequest(() => Guid.NewGuid().ToString("N"));
+        if (request == null)
+        {
+            return;
+        }
+        AtomicJsonFile.WriteJsonAtomic(
+            _gameBindingRequestPath,
+            JsonSerializer.Serialize(request, new JsonSerializerOptions { WriteIndented = true }));
+        _gameBindingRequestQueued = true;
+        RefreshGameBindingControls();
+    }
+
+    private void CancelGameBindingEdit()
+    {
+        if (_gameBindingRequestQueued)
+        {
+            TryDeleteFile(_gameBindingRequestPath);
+            _gameBindingRequestQueued = false;
+        }
+        _gameBindingEdit.Cancel();
+        _gameBindingSelectorsResetting = true;
+        foreach (KeyValuePair<int, ComboBox> pair in _gameBindingSelectors)
+        {
+            int raw = _gameBindingEdit.GetSelection(pair.Key);
+            pair.Value.SelectedIndex = GameBindingSupportedButtons.IsSupported(raw) ? IndexOfOption(raw) : -1;
+        }
+        _gameBindingSelectorsResetting = false;
+        RefreshGameBindingControls();
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private sealed class GameButtonOption
+    {
+        internal GameButtonOption(int raw, string name)
+        {
+            Raw = raw;
+            Name = name;
+        }
+
+        internal int Raw { get; }
+        internal string Name { get; }
+        public override string ToString() => Name;
     }
 
     private static string GetContextDisplayName(ControllerContext context)
@@ -699,6 +875,7 @@ internal sealed class SettingsForm : Form
 
     private void SaveAndClose()
     {
+        _savedAndClosing = true;
         SettingsModel settings = Read<SettingsModel>(_settingsPath) ?? new SettingsModel();
         settings.UiLanguage = _uiLanguage.SelectedIndex == 1 ? "Japanese" : _uiLanguage.SelectedIndex == 2 ? "English" : "Auto";
         settings.RightStickMode = _mode.SelectedIndex == 1 ? RightStickMode.HorizontalTurn : RightStickMode.FullCamera;

@@ -27,6 +27,7 @@ namespace NocturneModernController
                 ControllerSettings.Load();
                 ModernControllerApi.ReloadBindings();
                 ModernControllerApi.ApplyFeatureToggleRequests();
+                GameBindingRequestProcessor.OnSettingsClosed();
                 MelonLogger.Msg("[NocturneModernController] Settings GUI closed; settings reloaded.");
             }
 
@@ -85,7 +86,9 @@ namespace NocturneModernController
                 $"\"{ModernControllerApi.BindingsPath}\" " +
                 $"\"{ModernControllerApi.FeaturesPath}\" " +
                 $"\"{ModernControllerApi.FeatureRequestsPath}\" " +
-                Process.GetCurrentProcess().Id;
+                Process.GetCurrentProcess().Id + " " +
+                $"\"{ModernControllerApi.GameBindingRequestPath}\" " +
+                $"\"{ModernControllerApi.GameBindingResultPath}\"";
             _process = Process.Start(new ProcessStartInfo(executable, arguments)
             {
                 UseShellExecute = true,

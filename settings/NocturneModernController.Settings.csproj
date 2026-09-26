@@ -17,5 +17,7 @@
     <Compile Include="..\shared\BindingStatusFormatter.cs" Link="BindingStatusFormatter.cs" />
     <Compile Include="..\shared\DefaultBindingResolver.cs" Link="DefaultBindingResolver.cs" />
     <Compile Include="..\shared\GameBindingSnapshot.cs" Link="GameBindingSnapshot.cs" />
+    <Compile Include="..\shared\GameBindingWrite.cs" Link="GameBindingWrite.cs" />
+    <Compile Include="..\shared\GameBindingEdit.cs" Link="GameBindingEdit.cs" />
   </ItemGroup>
 </Project>
