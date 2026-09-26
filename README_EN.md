@@ -66,6 +66,19 @@ Default bindings include:
 
 Context separation prevents FIELD bindings from unconditionally replacing standard BATTLE commands such as RB Pass.
 
+## GAME Bindings
+
+The **GAME Bindings** tab in Settings edits the game's own (native) controller key config. Changes are saved to the game's native configuration and persist across restarts.
+
+- 15 actions whose mapping has been verified on real hardware can be edited (Confirm/Action, Cancel, UI Display On/Off, Command Menu, Rotate Camera Left/Right, Reset Camera, Toggle First/Third Person, Auto Map, Skill Help On/Off, Auto Battle, Pass, Fast-Forward Text, Puzzle Menu, Punch).
+- Supported buttons: A, B, X, Y, LB, LT, RB, RT, L3, R3, SELECT, START.
+- One binding can be changed per **Apply**. Apply queues the change; it takes effect in the game when you close Settings with **OK / Save**. Closing with Cancel, or pressing Undo, discards it.
+- An assignment that would duplicate another action's button is rejected using the game's own duplicate check. Bindings are never swapped.
+- Settings never writes game memory. The Controller mod inside the game checks that the current value and native state still match, applies the change through the game's own save path, and restores the previous binding if anything fails.
+- The outcome is shown as "Last change" the next time Settings opens.
+- An action bound to a button outside the supported set is shown as `Unknown (raw=N)` and cannot be edited.
+- Enter the field in game before opening Settings so the current bindings can be read reliably.
+
 ## Verified behavior
 
 - Right-stick horizontal turning and standard vertical camera in dungeons
@@ -75,6 +88,7 @@ Context separation prevents FIELD bindings from unconditionally replacing standa
 - Force Encounter through the game's normal encounter route
 - Smart Auto Battle through the game's standard Auto command route
 - Integrated settings, bindings, five built-in feature cards, and external provider discovery
+- GAME binding editing (Command Menu Y -> X -> Y): reflected in actual input and the native Key Config screen, kept across restarts, and the native configuration file was byte-identical to the original after the round trip
 
 ## Known limitations
 
