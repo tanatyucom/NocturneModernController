@@ -35,6 +35,49 @@ namespace NocturneModernController
             ISet<string> unassignedOverrides) =>
             Analyze(candidates, savedActionContexts, occupiedSlots, unassignedOverrides).Applied;
 
+        // Default bindings to add given the current binding state. Only
+        // bindings of registered actions count as saved or as occupying a
+        // slot; saved conflict bindings mark their action/context as saved.
+        // Adding the result to `bindings` and planning again yields nothing,
+        // so this can run again whenever an action is registered late.
+        internal static IReadOnlyList<DefaultBindingCandidate> PlanNewDefaults(
+            ISet<string> registeredActionIds,
+            IEnumerable<ExistingBinding> bindings,
+            IEnumerable<ExistingBinding> savedConflictBindings,
+            IEnumerable<string> unassignedOverrideKeys,
+            IEnumerable<DefaultBindingCandidate> candidates)
+        {
+            var savedActionContexts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var occupiedSlots = new HashSet<string>(StringComparer.Ordinal);
+            foreach (ExistingBinding binding in bindings)
+            {
+                if (!registeredActionIds.Contains(binding.ActionId))
+                {
+                    continue;
+                }
+
+                savedActionContexts.Add(ActionContextKey(binding.Context, binding.ActionId));
+                occupiedSlots.Add(SlotKey(binding.Context, binding.Buttons));
+            }
+            foreach (ExistingBinding binding in savedConflictBindings)
+            {
+                if (registeredActionIds.Contains(binding.ActionId))
+                {
+                    savedActionContexts.Add(ActionContextKey(binding.Context, binding.ActionId));
+                }
+            }
+
+            return Resolve(
+                candidates,
+                savedActionContexts,
+                occupiedSlots,
+                new HashSet<string>(unassignedOverrideKeys, StringComparer.OrdinalIgnoreCase));
+        }
+
+        // A saved binding as the planner sees it; Buttons must be normalized
+        // (distinct, sorted) the same way as DefaultBindingCandidate.Buttons.
+        internal readonly record struct ExistingBinding(int Context, string ActionId, IReadOnlyList<int> Buttons);
+
         internal static Resolution Analyze(
             IEnumerable<DefaultBindingCandidate> candidates,
             ISet<string> savedActionContexts,

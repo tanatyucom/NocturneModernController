@@ -25,7 +25,7 @@ namespace NocturneModernController
         private bool? _supportedGameBuild;
 
         public bool IsReady =>
-            FieldDashPatch.IsExplorationActive && ModernControllerApi.GameActionBindingsReady;
+            ExplorationState.IsExplorationActive && ModernControllerApi.GameActionBindingsReady;
 
         // Hashed once per session, on the first request that gets this far.
         public bool IsSupportedGameBuild

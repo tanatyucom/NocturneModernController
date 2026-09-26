@@ -16,7 +16,7 @@ namespace NocturneModernController
 
         internal static void Sample()
         {
-            if (FieldDashPatch.IsExplorationActive || SettingsGuiController.IsOpen)
+            if (ExplorationState.IsExplorationActive || SettingsGuiController.IsOpen)
             {
                 SetAutoActive(false, "non-battle context");
                 return;

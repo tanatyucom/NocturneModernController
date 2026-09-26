@@ -16,7 +16,7 @@ namespace NocturneModernController
 
         internal static void Sample()
         {
-            if (!FieldDashPatch.IsExplorationActive)
+            if (!ExplorationState.IsExplorationActive)
             {
                 _wasHeld = false;
                 CancelPendingRequest();
@@ -55,7 +55,7 @@ namespace NocturneModernController
 
         internal static void BoostNextNormalCheck(ref float length)
         {
-            if (_requestPending && FieldDashPatch.IsExplorationActive)
+            if (_requestPending && ExplorationState.IsExplorationActive)
             {
                 length = Math.Max(length, ForcedTravelLength);
             }

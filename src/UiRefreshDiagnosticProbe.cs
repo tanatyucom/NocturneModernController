@@ -55,7 +55,7 @@ namespace NocturneModernController
         {
             _frame++;
 
-            bool exploration = FieldDashPatch.IsExplorationActive;
+            bool exploration = ExplorationState.IsExplorationActive;
             if (exploration && !_lastExploration)
             {
                 if (!_baselineDone)
@@ -130,7 +130,7 @@ namespace NocturneModernController
         private static void Snapshot(string point)
         {
             Log($"POINT={point} elapsedMs={Clock.ElapsedMilliseconds} frame={_frame} " +
-                $"exploration={FieldDashPatch.IsExplorationActive}");
+                $"exploration={ExplorationState.IsExplorationActive}");
             Log($"  FLAGS ChangeTexEXE={Try(() => dds3ConfigMainSteam.IsChangeTexEXE().ToString())} " +
                 $"ChangeTexNG={Try(() => dds3ConfigMainSteam.IsChangeTexNG().ToString())}");
             Log($"  BINDING GetConfigGamePad(7)={Try(() => dds3ConfigGamePadSteam.GetConfigGamePad(7).ToString())} " +

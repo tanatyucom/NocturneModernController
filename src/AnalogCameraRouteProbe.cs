@@ -17,7 +17,7 @@ namespace NocturneModernController
             // through this exact channel. Steam recording happened to expose
             // the physical value here; provide the same value from our SDL
             // sampler so the native spherical orbit, limits and smoothing run.
-            if (!FieldDashPatch.IsExplorationActive ||
+            if (!ExplorationState.IsExplorationActive ||
                 !SdlRightStickInput.HasLiveInput ||
                 __0 != 0 || __2 != 1 || __3 != 1)
             {

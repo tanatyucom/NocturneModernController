@@ -22,7 +22,7 @@ namespace NocturneModernController
 
         private static void Postfix()
         {
-            if (!FieldDashPatch.IsExplorationActive)
+            if (!ExplorationState.IsExplorationActive)
             {
                 return;
             }

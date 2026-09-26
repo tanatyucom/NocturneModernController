@@ -129,6 +129,28 @@ namespace NocturneModernController
             new(StringComparer.OrdinalIgnoreCase);
         private static bool _bindingsLoaded;
         private static bool _bindingsLoadedFromLegacy;
+        private static bool _initialBindingsResolved;
+        private static bool _resolvingBindings;
+
+        // Read-only Core state for external mods. Read from the game's main
+        // thread (MelonMod.OnUpdate, Harmony patches); values are live, not cached.
+
+        // True while the player is in field exploration: the field update
+        // (fldPlayer.fldPlayerCalc) ran within the last 100 ms. False in
+        // battle, menus, events, loading and while the Settings window is
+        // open (the game is minimized), and on the first frames after it closes.
+        public static bool IsExplorationActive => ExplorationState.IsExplorationActive;
+
+        // True from the moment Controller launches the Settings window until
+        // that Settings process has exited. Mod actions should not run while
+        // this is true. It does not cover the time after Settings closes until
+        // exploration resumes; check IsExplorationActive for that.
+        public static bool IsSettingsOpen => SettingsGuiController.IsOpen;
+
+        // True when Controller's UI language resolves to Japanese (explicit
+        // setting, or "Auto" on a Japanese Windows UI culture); false means
+        // English. Updated when Settings closes.
+        public static bool UseJapaneseUi => ControllerSettings.UseJapanese;
 
         public static void RegisterFeatureProvider(IModernFeatureProvider provider)
         {
@@ -227,82 +249,83 @@ namespace NocturneModernController
             }
 
             Actions[definition.ActionId] = definition;
+            if (_initialBindingsResolved)
+            {
+                ResolveBindings();
+            }
         }
 
+        // Resolves default bindings for every registered action that has no
+        // saved binding, override or conflicting default. Runs once at startup
+        // and again whenever an action is registered after that, so external
+        // mods initialized after Controller still get their defaults. Existing
+        // bindings are never changed; see DefaultBindingResolver.PlanNewDefaults.
         internal static void ResolveBindings()
         {
-            EnsureBindingsLoaded();
-            var registeredActionIds = new HashSet<string>(
-                Actions.Keys,
-                StringComparer.OrdinalIgnoreCase);
-            var savedActionContexts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var occupiedSlots = new HashSet<string>(StringComparer.Ordinal);
-            foreach (ControllerBindingEntry binding in Bindings)
+            if (_resolvingBindings)
             {
-                if (!registeredActionIds.Contains(binding.ActionId))
+                return;
+            }
+            _resolvingBindings = true;
+            try
+            {
+                EnsureBindingsLoaded();
+                var registeredActionIds = new HashSet<string>(
+                    Actions.Keys,
+                    StringComparer.OrdinalIgnoreCase);
+                var candidates = Actions.Values.SelectMany(action =>
+                    action.DefaultBindings
+                        .Select(binding => new
+                        {
+                            Binding = binding,
+                            Buttons = NormalizeChord(binding.Buttons)
+                        })
+                        .Where(item =>
+                            IsSingleContext(item.Binding.Context) &&
+                            item.Buttons.Count > 0)
+                        .Select(item => new DefaultBindingCandidate
+                        {
+                            Context = (int)item.Binding.Context,
+                            Buttons = item.Buttons.Select(button => (int)button).ToArray(),
+                            ActionId = action.ActionId
+                        }));
+
+                foreach (DefaultBindingCandidate resolved in DefaultBindingResolver.PlanNewDefaults(
+                             registeredActionIds,
+                             Bindings.Select(ToExistingBinding),
+                             SavedBindingConflicts
+                                 .SelectMany(conflict => conflict.Bindings)
+                                 .Select(ToExistingBinding),
+                             BindingOverrides
+                                 .Where(entry => entry.State == "Unassigned")
+                                 .Select(entry => DefaultBindingResolver.ActionContextKey(
+                                     entry.Context,
+                                     entry.ActionId)),
+                             candidates))
                 {
-                    continue;
+                    Bindings.Add(new ControllerBindingEntry
+                    {
+                        Context = (ControllerContext)resolved.Context,
+                        Buttons = resolved.Buttons.Select(button => (ControllerButton)button).ToList(),
+                        ActionId = resolved.ActionId,
+                        Source = "Default"
+                    });
                 }
 
-                savedActionContexts.Add(DefaultBindingResolver.ActionContextKey(
-                    (int)binding.Context,
-                    binding.ActionId));
-                occupiedSlots.Add(DefaultBindingResolver.SlotKey(
-                    (int)binding.Context,
-                    NormalizeChord(binding.Buttons).Select(button => (int)button)));
+                SaveSnapshots();
+                _initialBindingsResolved = true;
             }
-            foreach (ControllerBindingEntry binding in SavedBindingConflicts
-                         .SelectMany(conflict => conflict.Bindings))
+            finally
             {
-                if (registeredActionIds.Contains(binding.ActionId))
-                {
-                    savedActionContexts.Add(DefaultBindingResolver.ActionContextKey(
-                        (int)binding.Context,
-                        binding.ActionId));
-                }
+                _resolvingBindings = false;
             }
-
-            var unassignedOverrides = new HashSet<string>(
-                BindingOverrides
-                    .Where(entry => entry.State == "Unassigned")
-                    .Select(entry => DefaultBindingResolver.ActionContextKey(
-                        entry.Context,
-                        entry.ActionId)),
-                StringComparer.OrdinalIgnoreCase);
-            var candidates = Actions.Values.SelectMany(action =>
-                action.DefaultBindings
-                    .Select(binding => new
-                    {
-                        Binding = binding,
-                        Buttons = NormalizeChord(binding.Buttons)
-                    })
-                    .Where(item =>
-                        IsSingleContext(item.Binding.Context) &&
-                        item.Buttons.Count > 0)
-                    .Select(item => new DefaultBindingCandidate
-                    {
-                        Context = (int)item.Binding.Context,
-                        Buttons = item.Buttons.Select(button => (int)button).ToArray(),
-                        ActionId = action.ActionId
-                    }));
-
-            foreach (DefaultBindingCandidate resolved in DefaultBindingResolver.Resolve(
-                         candidates,
-                         savedActionContexts,
-                         occupiedSlots,
-                         unassignedOverrides))
-            {
-                Bindings.Add(new ControllerBindingEntry
-                {
-                    Context = (ControllerContext)resolved.Context,
-                    Buttons = resolved.Buttons.Select(button => (ControllerButton)button).ToList(),
-                    ActionId = resolved.ActionId,
-                    Source = "Default"
-                });
-            }
-
-            SaveSnapshots();
         }
+
+        private static DefaultBindingResolver.ExistingBinding ToExistingBinding(ControllerBindingEntry binding) =>
+            new(
+                (int)binding.Context,
+                binding.ActionId,
+                NormalizeChord(binding.Buttons).Select(button => (int)button).ToArray());
 
         public static IReadOnlyList<ControllerActionDefinition> GetRegisteredActions() =>
             Actions.Values.OrderBy(action => action.ModId).ThenBy(action => action.DisplayName).ToArray();
@@ -423,7 +446,7 @@ namespace NocturneModernController
         // sweep, captured before dds3TitleInit had even run, returned a
         // stale/default value for index=7 instead of the player's actual
         // setting). The only readiness signal with real-hardware confirmation
-        // is FieldDashPatch.IsExplorationActive == true (the same gate
+        // is ExplorationState.IsExplorationActive == true (the same gate
         // GameBindingProbe used for the A/B/A that correctly tracked Y/X/Y).
         // SaveSnapshots() still writes whatever partial/default result is
         // available at startup so the file always exists; only a capture
@@ -490,7 +513,7 @@ namespace NocturneModernController
         }
 
         // Read-only readiness retry, gated on the one condition with
-        // real-hardware confirmation: FieldDashPatch.IsExplorationActive.
+        // real-hardware confirmation: ExplorationState.IsExplorationActive.
         // GetConfigGamePad is not even called while inactive. Frame-gated
         // once active, to avoid calling the native getter 34x every frame;
         // stops permanently after the first fully successful sweep taken
@@ -502,7 +525,7 @@ namespace NocturneModernController
                 return;
             }
 
-            if (!FieldDashPatch.IsExplorationActive)
+            if (!ExplorationState.IsExplorationActive)
             {
                 return;
             }

@@ -46,7 +46,7 @@ namespace NocturneModernController
     {
         private static void Postfix(int __0, float __1, int __result)
         {
-            if (FieldDashPatch.IsExplorationActive)
+            if (ExplorationState.IsExplorationActive)
             {
                 ForceEncounterTelemetry.LogCalc(__0, __1, __result);
             }
@@ -58,7 +58,7 @@ namespace NocturneModernController
     {
         private static void Postfix(int __result)
         {
-            if (FieldDashPatch.IsExplorationActive)
+            if (ExplorationState.IsExplorationActive)
             {
                 ForceEncounterTelemetry.LogFieldCheck(__result);
             }

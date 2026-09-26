@@ -15,5 +15,6 @@
     <Compile Include="..\..\shared\GameBindingSnapshot.cs" Link="GameBindingSnapshot.cs" />
     <Compile Include="..\..\shared\GameBindingWrite.cs" Link="GameBindingWrite.cs" />
     <Compile Include="..\..\shared\GameBindingEdit.cs" Link="GameBindingEdit.cs" />
+    <Compile Include="..\..\shared\ExplorationWindow.cs" Link="ExplorationWindow.cs" />
   </ItemGroup>
 </Project>

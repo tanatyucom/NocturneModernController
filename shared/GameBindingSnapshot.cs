@@ -13,7 +13,7 @@ namespace NocturneModernController
         public bool GameActionBindingsAvailable { get; set; }
         public List<GameActionBindingRawEntry> GameActionBindingsRaw { get; set; } = new();
 
-        // True only for a snapshot captured after FieldDashPatch.IsExplorationActive
+        // True only for a snapshot captured after ExplorationState.IsExplorationActive
         // (see GameActionBindingSnapshotReader below). GameActionBindingsAvailable
         // alone just means the native getter did not throw -- it is also true for
         // a pre-exploration startup sweep, which real-hardware evidence showed can
