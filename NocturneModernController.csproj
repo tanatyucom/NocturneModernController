@@ -23,6 +23,8 @@
     <Compile Remove="tools\**\*.cs" />
     <Compile Remove="tests\**\*.cs" />
     <Compile Remove="analysis\**\*.cs" />
+    <!-- External gameplay mods built as their own projects. -->
+    <Compile Remove="mods\**\*.cs" />
     <Compile Remove="src\FieldCameraMainProbe.cs" />
     <Compile Remove="src\RightStickTurnInput.cs" />
     <Compile Remove="src\XInputReader.cs" />

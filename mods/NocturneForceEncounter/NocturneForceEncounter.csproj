@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>0.1.0</Version>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>NocturneForceEncounter</AssemblyName>
+    <RootNamespace>NocturneForceEncounter</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Optimize>true</Optimize>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(GameDir)' == ''">
+    <GameDir>C:\Program Files (x86)\Steam\steamapps\common\smt3hd</GameDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Controller ecosystem mod: uses ModernControllerApi at runtime; the
+         Controller DLL itself is installed separately and never copied here. -->
+    <ProjectReference Include="..\..\NocturneModernController.csproj">
+      <Private>false</Private>
+    </ProjectReference>
+    <Reference Include="MelonLoader">
+      <HintPath>$(GameDir)\MelonLoader\net6\MelonLoader.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(GameDir)\MelonLoader\net6\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppInterop.Runtime">
+      <HintPath>$(GameDir)\MelonLoader\net6\Il2CppInterop.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(GameDir)\MelonLoader\Il2CppAssemblies\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2Cppmscorlib">
+      <HintPath>$(GameDir)\MelonLoader\Il2CppAssemblies\Il2Cppmscorlib.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>
