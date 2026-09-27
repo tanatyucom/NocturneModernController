@@ -21,34 +21,38 @@ internal static class LateRegistrationTests
         UnassignedOverrideIsRespected();
         RepeatedPlanningIsStable();
         SurvivesFileRoundTrip();
-        // Force Encounter (Field X) and Quick Heal (Field RB) left Controller.
+        // Actions that left Controller: Force Encounter (Field X), Quick Heal
+        // (Field RB), Dash (Field LT, Field RT) and Dash Keep (Field LT+RT).
         OrphanBindingSurvivesUninstallAndReinstall("nocturne-modern-controller.force-encounter", 3);
         OrphanBindingSurvivesUninstallAndReinstall("nocturne-modern-controller.quick-heal", 6);
+        OrphanBindingSurvivesUninstallAndReinstall("nocturne-modern-controller.dash", 7);
+        OrphanBindingSurvivesUninstallAndReinstall("nocturne-modern-controller.dash", 8);
+        OrphanBindingSurvivesUninstallAndReinstall("nocturne-modern-controller.dash-keep", 7, 8);
     }
 
     // An action moved out of Controller: with its external mod removed the
     // saved binding stays in the file but does not block the slot; when the
     // mod is installed again the same ActionId gets that binding back.
-    private static void OrphanBindingSurvivesUninstallAndReinstall(string actionId, int button)
+    private static void OrphanBindingSurvivesUninstallAndReinstall(string actionId, params int[] buttons)
     {
         var withoutMod = new State();
-        withoutMod.Bindings.Add(new ExistingBinding(Field, actionId, new[] { button }));
-        withoutMod.Register("core.dash", 7);
+        withoutMod.Bindings.Add(new ExistingBinding(Field, actionId, buttons));
+        withoutMod.Register("core.remaining", 11);
         withoutMod.Resolve();
         Check(withoutMod.Bindings.Any(b => b.ActionId == actionId),
             actionId + ": the unregistered action's saved binding is kept");
 
-        withoutMod.Register("other.late", button);
+        withoutMod.Register("other.late", buttons);
         Check(withoutMod.Resolve().Any(c => c.ActionId == "other.late"),
             actionId + ": an orphan binding does not occupy its slot for registered actions");
 
         var reinstalled = new State();
-        reinstalled.Bindings.Add(new ExistingBinding(Field, actionId, new[] { button }));
-        reinstalled.Register("core.dash", 7);
+        reinstalled.Bindings.Add(new ExistingBinding(Field, actionId, buttons));
+        reinstalled.Register("core.remaining", 11);
         reinstalled.Resolve();
-        reinstalled.Register(actionId, button);
+        reinstalled.Register(actionId, buttons);
         Check(reinstalled.Resolve().Count == 0 &&
-              reinstalled.Bindings.Single(b => b.ActionId == actionId).Buttons.SequenceEqual(new[] { button }),
+              reinstalled.Bindings.Single(b => b.ActionId == actionId).Buttons.SequenceEqual(buttons),
             actionId + ": reinstalling the mod reuses the saved binding without a duplicate");
     }
 

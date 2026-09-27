@@ -31,6 +31,10 @@ namespace NocturneModernController
         public AutoBattleMode AutoBattleMode { get; set; } = AutoBattleMode.NormalAttackOnly;
         public float AutoBattleSpeed { get; set; } = 1.0f;
         public bool RightStickEnabled { get; set; } = true;
+        // Deprecated, migration only: Dash / Dash Keep moved to the standalone
+        // NocturneModernDash mod, which reads this value once on its first run.
+        // Controller no longer uses it; it is kept only so saving settings.json
+        // does not drop it before that migration happens.
         public bool DashEnabled { get; set; } = true;
         // Deprecated, migration only: Quick Heal moved to the standalone
         // NocturneQuickHeal mod, which reads this value once on its first run.

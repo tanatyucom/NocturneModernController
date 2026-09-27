@@ -4,40 +4,11 @@ namespace NocturneModernController
 {
     internal static class BuiltInControllerActions
     {
-        internal const string Dash = "nocturne-modern-controller.dash";
-        internal const string DashKeep = "nocturne-modern-controller.dash-keep";
         internal const string OpenSettings = "nocturne-modern-controller.open-settings";
 
         internal static void Register(bool settingsGuiAvailable)
         {
             bool ja = ControllerSettings.UseJapanese;
-            ModernControllerApi.RegisterAction(new ControllerActionDefinition
-            {
-                ModId = "NocturneModernController",
-                ActionId = Dash,
-                DisplayName = ja ? "ダッシュ" : "Dash",
-                Description = ja ? "押している間、FIELD/DUNGEONの移動速度を上げます。" : "Increase movement speed in FIELD/DUNGEON while held.",
-                Contexts = ControllerContext.Field,
-                Behavior = ControllerActionBehavior.Hold,
-                DefaultBindings = new List<ControllerDefaultBinding>
-                {
-                    new() { Context = ControllerContext.Field, Buttons = new() { ControllerButton.LT } },
-                    new() { Context = ControllerContext.Field, Buttons = new() { ControllerButton.RT } }
-                }
-            });
-            ModernControllerApi.RegisterAction(new ControllerActionDefinition
-            {
-                ModId = "NocturneModernController",
-                ActionId = DashKeep,
-                DisplayName = ja ? "ダッシュ固定切替" : "Toggle Dash Keep",
-                Description = ja ? "ダッシュ固定のON/OFFを切り替えます。" : "Toggle persistent dash on or off.",
-                Contexts = ControllerContext.Field,
-                Behavior = ControllerActionBehavior.Press,
-                DefaultBindings = new List<ControllerDefaultBinding>
-                {
-                    new() { Context = ControllerContext.Field, Buttons = new() { ControllerButton.LT, ControllerButton.RT } }
-                }
-            });
             if (settingsGuiAvailable)
             {
                 ModernControllerApi.RegisterAction(new ControllerActionDefinition
