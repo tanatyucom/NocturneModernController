@@ -1286,8 +1286,6 @@ internal sealed class SettingsForm : Form
         {
             return actionId switch
             {
-                "nocturne-modern-controller.dash" => "Dash",
-                "nocturne-modern-controller.dash-keep" => "Toggle Dash Keep",
                 "nocturne-modern-controller.open-settings" => "Open Settings",
                 _ => _actions.FirstOrDefault(action => action.ActionId == actionId)?.DisplayName ?? actionId
             };
@@ -1313,7 +1311,6 @@ internal sealed class SettingsForm : Form
         return feature.Id switch
         {
             "right_stick_camera" => "Use the right stick for dungeon turning and vertical camera control.",
-            "dash" => "Increase movement speed in dungeons and on the world map.",
             "smart_auto" => "Choose standard Auto commands using weaknesses, resistances, MP, and attack predictions.",
             _ => feature.Description
         };
@@ -1507,8 +1504,6 @@ internal sealed class AssignmentDialog : Form
         if (japanese) return action.DisplayName;
         return action.ActionId switch
         {
-            "nocturne-modern-controller.dash" => "Dash",
-            "nocturne-modern-controller.dash-keep" => "Toggle Dash Keep",
             "nocturne-modern-controller.open-settings" => "Open Settings",
             _ => action.DisplayName
         };

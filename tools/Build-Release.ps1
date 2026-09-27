@@ -106,7 +106,8 @@ try {
     # Standalone gameplay mods, each packaged on its own and versioned by its csproj.
     $standaloneMods = @(
         @{ Name = 'NocturneForceEncounter' },
-        @{ Name = 'NocturneQuickHeal' }
+        @{ Name = 'NocturneQuickHeal' },
+        @{ Name = 'NocturneModernDash' }
     )
     foreach ($mod in $standaloneMods) {
         $mod.Project = "mods\$($mod.Name)\$($mod.Name).csproj"

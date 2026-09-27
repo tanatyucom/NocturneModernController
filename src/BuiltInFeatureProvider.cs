@@ -20,9 +20,6 @@ namespace NocturneModernController
                 Feature("right_stick_camera", "Right Stick Camera",
                     ja ? "右スティックでダンジョンの旋回・カメラ上下を操作します。" : "Use the right stick for dungeon turning and vertical camera control.",
                     "QoL", settings.RightStickEnabled, 10),
-                Feature("dash", "Dash",
-                    ja ? "ダンジョンとワールドマップで移動速度を上げます。" : "Increase movement speed in dungeons and on the world map.",
-                    "QoL", settings.DashEnabled, 20),
                 Feature("smart_auto", "Smart Auto Battle",
                     ja ? "弱点・耐性・MP・通常攻撃予測を使って標準Autoのコマンドを選択します。" : "Choose standard Auto commands using weaknesses, resistances, MP, and attack predictions.",
                     "Gameplay Change", settings.SmartAutoEnabled, 50)
@@ -35,7 +32,6 @@ namespace NocturneModernController
             switch (featureId.ToLowerInvariant())
             {
                 case "right_stick_camera": settings.RightStickEnabled = enabled; break;
-                case "dash": settings.DashEnabled = enabled; break;
                 case "smart_auto":
                     settings.SmartAutoEnabled = enabled;
                     if (!enabled) SmartAutoBattleRuntime.Shutdown();

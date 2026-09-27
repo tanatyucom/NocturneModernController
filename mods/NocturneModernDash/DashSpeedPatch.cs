@@ -4,13 +4,20 @@ using System.IO;
 using System.Runtime.InteropServices;
 using HarmonyLib;
 using Il2Cpp;
+using Il2Cpplibsdf_H;
 using MelonLoader;
 
-namespace NocturneModernController
+namespace NocturneModernDash
 {
+    // The speed change, moved unchanged from Controller's built-in
+    // FieldDashPatch: during the field update only (Prefix writes, Postfix and
+    // Finalizer restore), the native movement-step constants 29/20 (dungeon)
+    // and 16 (world map) are multiplied by 1.5. Because it only acts inside
+    // fldPlayerCalc, no separate exploration tracking is needed.
     [HarmonyPatch(typeof(fldPlayer), nameof(fldPlayer.fldPlayerCalc))]
-    internal static class FieldDashPatch
+    internal static class DashSpeedPatch
     {
+        private const string LogPrefix = "[NocturneModernDash] ";
         private const int VirtualKeyDash = 0x50; // P
         // Dungeon doors use thin event/collision volumes.  At x1.60 the
         // player can cross one between field ticks, so keep dungeon movement
@@ -33,8 +40,8 @@ namespace NocturneModernController
         private static bool _patchActive;
         private static bool _loggedHeld;
         private static bool _loggedUnsupported;
-        private static bool _dashLatched;
-        private static bool _comboWasHeld;
+
+        internal static DashState State { get; } = new();
 
         [DllImport("user32.dll")]
         private static extern short GetAsyncKeyState(int virtualKey);
@@ -46,44 +53,31 @@ namespace NocturneModernController
             uint newProtection,
             out uint oldProtection);
 
-        private static bool IsPadMapHeld(Il2Cpplibsdf_H.SDF_PADMAP map)
-        {
-            try
-            {
-                return dds3PadManager.DDS3_PADCHECK_PRESS(map, 0);
-            }
-            catch (Exception)
-            {
-                // Keep the verified keyboard/reWASD fallback available even if
-                // the game's logical pad manager is unavailable during startup.
-                return false;
-            }
-        }
-
         private static bool UpdateDashState()
         {
-            bool dashHeld = ModernControllerApi.IsHeld(
-                BuiltInControllerActions.Dash,
-                ControllerContext.Field);
-            bool comboHeld = ModernControllerApi.IsHeld(
-                BuiltInControllerActions.DashKeep,
-                ControllerContext.Field);
-            if (comboHeld && !_comboWasHeld)
-            {
-                _dashLatched = !_dashLatched;
-                MelonLogger.Msg(
-                    $"[NocturneModernController] Dash keep {(_dashLatched ? "ON" : "OFF")} (LT+RT)");
-            }
-            _comboWasHeld = comboHeld;
-
+            ModernControllerIntegration? integration = DashMod.Integration;
+            bool dashHeld = DashInput.ReadHeld(
+                integration != null,
+                () => integration!.IsHeld(ModernControllerIntegration.DashActionId),
+                StandaloneInput.IsDashHeld);
+            bool comboHeld = DashInput.ReadHeld(
+                integration != null,
+                () => integration!.IsHeld(ModernControllerIntegration.DashKeepActionId),
+                StandaloneInput.IsKeepComboHeld);
             bool keyboardHeld = (GetAsyncKeyState(VirtualKeyDash) & 0x8000) != 0;
-            return keyboardHeld || dashHeld || _dashLatched;
+
+            bool active = State.Update(dashHeld, comboHeld, keyboardHeld, out bool keepToggled);
+            if (keepToggled)
+            {
+                MelonLogger.Msg(LogPrefix + $"Dash keep {(State.IsKeepOn ? "ON" : "OFF")} (LT+RT)");
+            }
+            return active;
         }
 
         private static void Prefix()
         {
             RestoreSpeeds();
-            if (SettingsGuiController.IsOpen || !ControllerSettings.Current.DashEnabled)
+            if (!DashGate.Allows(DashSettings.Current.Enabled, DashMod.IsSettingsOpen))
             {
                 return;
             }
@@ -111,7 +105,7 @@ namespace NocturneModernController
             {
                 _loggedHeld = true;
                 MelonLogger.Msg(
-                    "[NocturneModernController] Dash ON " +
+                    LogPrefix + "Dash ON " +
                     "(P/LT/RT, dungeon x1.50 / world map x1.50)");
             }
         }
@@ -165,14 +159,14 @@ namespace NocturneModernController
                 {
                     _loggedUnsupported = true;
                     MelonLogger.Warning(
-                        $"[NocturneModernController] Unsupported game constants; dash disabled " +
+                        LogPrefix + "Unsupported game constants; dash disabled " +
                         $"(normal={normal}, alternate={alternate}, worldMap={worldMap}).");
                 }
                 return false;
             }
 
             _addressesValidated = true;
-            MelonLogger.Msg("[NocturneModernController] Native movement speed constants validated (29/20/16).");
+            MelonLogger.Msg(LogPrefix + "Native movement speed constants validated (29/20/16).");
             return true;
         }
 
@@ -229,7 +223,31 @@ namespace NocturneModernController
             }
 
             _loggedHeld = false;
-            MelonLogger.Msg("[NocturneModernController] Dash OFF");
+            MelonLogger.Msg(LogPrefix + "Dash OFF");
+        }
+    }
+
+    // Standalone input: the game's logical LT/RT (the same pad maps Controller
+    // uses for ControllerButton.LT/RT), so any pad the game supports works.
+    // LT and RT have no field/dungeon action in the game's default key config.
+    internal static class StandaloneInput
+    {
+        internal static bool IsDashHeld() =>
+            IsHeld(SDF_PADMAP.SDF_PADMAP_L2) || IsHeld(SDF_PADMAP.SDF_PADMAP_R2);
+
+        internal static bool IsKeepComboHeld() =>
+            IsHeld(SDF_PADMAP.SDF_PADMAP_L2) && IsHeld(SDF_PADMAP.SDF_PADMAP_R2);
+
+        private static bool IsHeld(SDF_PADMAP map)
+        {
+            try
+            {
+                return dds3PadManager.DDS3_PADCHECK_PRESS(map, 0);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
         }
     }
 }

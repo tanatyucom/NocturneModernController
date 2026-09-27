@@ -22,5 +22,8 @@
     <Compile Include="..\..\mods\NocturneQuickHeal\QuickHealLogic.cs" Link="QuickHeal\QuickHealLogic.cs" />
     <Compile Include="..\..\mods\NocturneQuickHeal\QuickHealSettings.cs" Link="QuickHeal\QuickHealSettings.cs" />
     <Compile Include="..\..\mods\NocturneQuickHeal\ModernControllerIntegration.cs" Link="QuickHeal\ModernControllerIntegration.cs" />
+    <Compile Include="..\..\mods\NocturneModernDash\DashLogic.cs" Link="Dash\DashLogic.cs" />
+    <Compile Include="..\..\mods\NocturneModernDash\DashSettings.cs" Link="Dash\DashSettings.cs" />
+    <Compile Include="..\..\mods\NocturneModernDash\ModernControllerIntegration.cs" Link="Dash\ModernControllerIntegration.cs" />
   </ItemGroup>
 </Project>
