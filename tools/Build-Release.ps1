@@ -107,7 +107,8 @@ try {
     $standaloneMods = @(
         @{ Name = 'NocturneForceEncounter' },
         @{ Name = 'NocturneQuickHeal' },
-        @{ Name = 'NocturneModernDash' }
+        @{ Name = 'NocturneModernDash' },
+        @{ Name = 'NocturneSmartAutoBattle' }
     )
     foreach ($mod in $standaloneMods) {
         $mod.Project = "mods\$($mod.Name)\$($mod.Name).csproj"
