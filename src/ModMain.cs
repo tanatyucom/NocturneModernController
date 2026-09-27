@@ -14,7 +14,6 @@ namespace NocturneModernController
         public override void OnInitializeMelon()
         {
             ControllerSettings.Load();
-            SmartAutoKnowledgeStore.Load();
             ModernControllerApi.RegisterFeatureProvider(BuiltInFeatureProvider.Instance);
             BuiltInControllerActions.Register(SettingsGuiController.IsAvailable);
             ModernControllerApi.ResolveBindings();
@@ -30,11 +29,6 @@ namespace NocturneModernController
             SettingsGuiController.Sample();
             GameBindingRequestProcessor.Sample();
             SdlRightStickInput.Sample();
-            if (ControllerSettings.Current.SmartAutoEnabled)
-            {
-                SmartAutoBattleTelemetry.Sample();
-                SmartAutoBattleRuntime.Sample();
-            }
             bool explorationActive = ExplorationState.IsExplorationActive;
             bool modActionsActive = explorationActive && !SettingsGuiController.IsOpen;
             ExternalInputBridge.UpdateGameContext(modActionsActive);
@@ -44,7 +38,6 @@ namespace NocturneModernController
         public override void OnDeinitializeMelon()
         {
             SettingsGuiController.Shutdown();
-            SmartAutoBattleRuntime.Shutdown();
             ExplorationCursorController.Restore();
             SdlRightStickInput.Shutdown();
         }

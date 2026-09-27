@@ -11,6 +11,7 @@ namespace NocturneModernController
         HorizontalTurn
     }
 
+    // Deprecated, migration only (see AutoBattleMode below).
     internal enum AutoBattleMode
     {
         NormalAttackOnly,
@@ -28,6 +29,11 @@ namespace NocturneModernController
         public float SensitivityX { get; set; } = 1.0f;
         public float SensitivityY { get; set; } = 1.0f;
         public float DeadZone { get; set; } = 0.15f;
+        // Deprecated, migration only: Smart Auto Battle moved to the standalone
+        // NocturneSmartAutoBattle mod, which reads AutoBattleMode,
+        // AutoBattleSpeed and SmartAutoEnabled once on its first run.
+        // Controller no longer uses them; they are kept only so saving
+        // settings.json does not drop them before that migration happens.
         public AutoBattleMode AutoBattleMode { get; set; } = AutoBattleMode.NormalAttackOnly;
         public float AutoBattleSpeed { get; set; } = 1.0f;
         public bool RightStickEnabled { get; set; } = true;
@@ -46,6 +52,7 @@ namespace NocturneModernController
         // run. Controller no longer uses it; it is kept only so saving
         // settings.json does not drop it before that migration happens.
         public bool ForceEncounterEnabled { get; set; } = true;
+        // Deprecated, migration only (see AutoBattleMode above).
         public bool SmartAutoEnabled { get; set; } = true;
 
         public ControllerSettings()

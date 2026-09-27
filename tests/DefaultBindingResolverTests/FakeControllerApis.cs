@@ -35,6 +35,9 @@ namespace FakeModernController
         public string Category { get; set; } = string.Empty;
         public int SortOrder { get; set; }
         public string Version { get; set; } = string.Empty;
+        public string[]? AllowedValues { get; set; }
+        public string? Value { get; set; }
+        public Dictionary<string, string>? AllowedValueLabels { get; set; }
     }
 
     public interface IModernFeatureProvider
@@ -44,6 +47,11 @@ namespace FakeModernController
         string Version { get; }
         IReadOnlyList<FeatureMetadata> GetFeatures();
         bool SetFeatureEnabled(string featureId, bool enabled);
+    }
+
+    public interface IModernFeatureValueProvider
+    {
+        bool SetFeatureValue(string featureId, string value);
     }
 
     public static class ModernControllerApi
