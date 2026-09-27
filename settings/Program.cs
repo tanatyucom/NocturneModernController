@@ -75,6 +75,7 @@ internal sealed class FeatureMetadata
     public string Notes { get; set; } = string.Empty;
     public string[]? AllowedValues { get; set; }
     public string? Value { get; set; }
+    public Dictionary<string, string>? AllowedValueLabels { get; set; }
 }
 
 internal sealed class FeatureProviderMetadata
@@ -682,7 +683,12 @@ internal sealed class SettingsForm : Form
             };
             foreach (string rawValue in feature.AllowedValues)
             {
-                selector.Items.Add(new FeatureValueOption(rawValue, ChanceValueLabel(rawValue, _japanese)));
+                selector.Items.Add(new FeatureValueOption(
+                    rawValue,
+                    FeatureValueLabels.Resolve(
+                        rawValue,
+                        feature.AllowedValueLabels,
+                        value => ChanceValueLabel(value, _japanese))));
             }
             string initialValue = !string.IsNullOrEmpty(feature.Value) && feature.AllowedValues.Contains(feature.Value)
                 ? feature.Value

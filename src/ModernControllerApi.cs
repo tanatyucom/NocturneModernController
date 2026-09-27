@@ -75,49 +75,6 @@ namespace NocturneModernController
         public string Source { get; set; } = "Default";
     }
 
-    public sealed class FeatureMetadata
-    {
-        public string Id { get; set; } = string.Empty;
-        public string Name { get; set; } = string.Empty;
-        public string Description { get; set; } = string.Empty;
-        public bool Enabled { get; set; }
-        public string Category { get; set; } = string.Empty;
-        public int SortOrder { get; set; }
-        public bool RequiresRestart { get; set; }
-        public bool ReadOnly { get; set; }
-        public string Version { get; set; } = string.Empty;
-        public string Warning { get; set; } = string.Empty;
-        public string Notes { get; set; } = string.Empty;
-        public string[]? AllowedValues { get; set; }
-        public string? Value { get; set; }
-    }
-
-    public sealed class FeatureProviderMetadata
-    {
-        public string ProviderId { get; set; } = string.Empty;
-        public string ProviderName { get; set; } = string.Empty;
-        public string Version { get; set; } = string.Empty;
-        public List<FeatureMetadata> Features { get; set; } = new();
-        public string Error { get; set; } = string.Empty;
-    }
-
-    public sealed class FeatureToggleRequest
-    {
-        public string ProviderId { get; set; } = string.Empty;
-        public string FeatureId { get; set; } = string.Empty;
-        public bool Enabled { get; set; }
-        public string? Value { get; set; }
-    }
-
-    public interface IModernFeatureProvider
-    {
-        string ProviderId { get; }
-        string ProviderName { get; }
-        string Version { get; }
-        IReadOnlyList<FeatureMetadata> GetFeatures();
-        bool SetFeatureEnabled(string featureId, bool enabled);
-    }
-
     public static class ModernControllerApi
     {
         private static readonly Dictionary<string, ControllerActionDefinition> Actions =
@@ -214,28 +171,46 @@ namespace NocturneModernController
             string featureId,
             bool enabled)
         {
-            if (!FeatureProviders.TryGetValue(providerId, out IModernFeatureProvider? provider))
+            if (!FeatureProviderDispatch.SetEnabled(FindFeatureProvider(providerId), featureId, enabled))
             {
                 return false;
             }
 
+            SaveFeatureSnapshotSafely();
+            return true;
+        }
+
+        // Sets a feature's value. Returns false when the provider is unknown,
+        // does not implement IModernFeatureValueProvider, rejects the value, or
+        // the value is not one of the feature's AllowedValues.
+        public static bool SetFeatureValue(
+            string providerId,
+            string featureId,
+            string value)
+        {
+            if (!FeatureProviderDispatch.SetValue(FindFeatureProvider(providerId), featureId, value))
+            {
+                return false;
+            }
+
+            SaveFeatureSnapshotSafely();
+            return true;
+        }
+
+        private static IModernFeatureProvider? FindFeatureProvider(string? providerId) =>
+            !string.IsNullOrEmpty(providerId) &&
+            FeatureProviders.TryGetValue(providerId, out IModernFeatureProvider? provider)
+                ? provider
+                : null;
+
+        private static void SaveFeatureSnapshotSafely()
+        {
             try
             {
-                FeatureMetadata? feature = provider.GetFeatures()
-                    .FirstOrDefault(item => string.Equals(
-                        item.Id, featureId, StringComparison.OrdinalIgnoreCase));
-                if (feature == null || feature.ReadOnly ||
-                    !provider.SetFeatureEnabled(featureId, enabled))
-                {
-                    return false;
-                }
-
                 SaveFeatureSnapshot();
-                return true;
             }
             catch
             {
-                return false;
             }
         }
 
@@ -604,17 +579,12 @@ namespace NocturneModernController
                         File.ReadAllText(FeatureRequestsPath));
                 if (requests != null)
                 {
-                    var unhandled = new List<FeatureToggleRequest>();
-                    foreach (FeatureToggleRequest request in requests)
-                    {
-                        if (!SetFeatureEnabled(
-                            request.ProviderId,
-                            request.FeatureId,
-                            request.Enabled))
-                        {
-                            unhandled.Add(request);
-                        }
-                    }
+                    // A value request goes only to SetFeatureValue; it must never
+                    // fall back to SetFeatureEnabled (its Enabled is always false).
+                    List<FeatureToggleRequest> unhandled = FeatureProviderDispatch.ApplyRequests(
+                        requests,
+                        request => SetFeatureEnabled(request.ProviderId, request.FeatureId, request.Enabled),
+                        request => SetFeatureValue(request.ProviderId, request.FeatureId, request.Value!));
                     if (unhandled.Count > 0)
                     {
                         AtomicJsonFile.WriteJsonAtomic(
@@ -710,7 +680,10 @@ namespace NocturneModernController
             Warning = feature.Warning,
             Notes = feature.Notes,
             AllowedValues = feature.AllowedValues,
-            Value = feature.Value
+            Value = feature.Value,
+            AllowedValueLabels = feature.AllowedValueLabels == null
+                ? null
+                : new Dictionary<string, string>(feature.AllowedValueLabels)
         };
 
         private static void EnsureBindingsLoaded()
