@@ -5,7 +5,7 @@ using MelonLoader;
 
 namespace NocturneModernController
 {
-    internal static class VanillaTurnInvocationPoc
+    internal static class LogicalTurnInjection
     {
         private static bool _leftHeld;
         private static bool _rightHeld;
@@ -107,19 +107,19 @@ namespace NocturneModernController
             if (__1 == SIActionName.FD_Turn_Left ||
                 __1 == SIActionName.PZL_MapRot_Left)
             {
-                __result = VanillaTurnInvocationPoc.LeftHeld;
+                __result = LogicalTurnInjection.LeftHeld;
                 if (__result)
                 {
-                    VanillaTurnInvocationPoc.LogLogicalInjection(left: true, action: __1);
+                    LogicalTurnInjection.LogLogicalInjection(left: true, action: __1);
                 }
             }
             else if (__1 == SIActionName.FD_Turn_Right ||
                      __1 == SIActionName.PZL_MapRot_Right)
             {
-                __result = VanillaTurnInvocationPoc.RightHeld;
+                __result = LogicalTurnInjection.RightHeld;
                 if (__result)
                 {
-                    VanillaTurnInvocationPoc.LogLogicalInjection(left: false, action: __1);
+                    LogicalTurnInjection.LogLogicalInjection(left: false, action: __1);
                 }
             }
         }

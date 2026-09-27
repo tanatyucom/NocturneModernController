@@ -45,14 +45,14 @@ namespace NocturneModernController
                 _hasTarget = true;
             }
 
-            if (VanillaTurnInvocationPoc.UpHeld)
+            if (LogicalTurnInjection.UpHeld)
             {
                 if (_lastAdjustedFrame != UnityEngine.Time.frameCount)
                 {
                     _targetY += UnitsPerSecond * UnityEngine.Time.unscaledDeltaTime;
                 }
             }
-            else if (VanillaTurnInvocationPoc.DownHeld)
+            else if (LogicalTurnInjection.DownHeld)
             {
                 if (_lastAdjustedFrame != UnityEngine.Time.frameCount)
                 {

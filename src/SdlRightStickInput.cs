@@ -24,7 +24,7 @@ namespace NocturneModernController
         {
             if (SettingsGuiController.IsOpen || !ControllerSettings.Current.RightStickEnabled)
             {
-                VanillaTurnInvocationPoc.SetHeldState(false, false, false, false);
+                LogicalTurnInjection.SetHeldState(false, false, false, false);
                 return;
             }
             if (!ExternalInputBridge.TryRead(out int x, out int y))
@@ -32,7 +32,7 @@ namespace NocturneModernController
                 _hasLiveInput = false;
                 _rawX = 0;
                 _rawY = 0;
-                VanillaTurnInvocationPoc.SetHeldState(
+                LogicalTurnInjection.SetHeldState(
                     left: false, right: false, up: false, down: false);
                 return;
             }
@@ -57,7 +57,7 @@ namespace NocturneModernController
                 _ when y > EngageThreshold => VerticalState.Down,
                 _ => VerticalState.Neutral
             };
-            VanillaTurnInvocationPoc.SetHeldState(
+            LogicalTurnInjection.SetHeldState(
                 left: next == TurnState.Left,
                 right: next == TurnState.Right,
                 up: nextVertical == VerticalState.Up,
@@ -80,7 +80,7 @@ namespace NocturneModernController
             _hasLiveInput = false;
             _rawX = 0;
             _rawY = 0;
-            VanillaTurnInvocationPoc.SetHeldState(
+            LogicalTurnInjection.SetHeldState(
                 left: false, right: false, up: false, down: false);
             ExternalInputBridge.Stop();
         }

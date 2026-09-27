@@ -32,8 +32,8 @@ namespace NocturneModernController
             {
                 MelonLogger.Msg(
                     $"[NocturneModernController] NATIVE-MOUSE drag={__result} " +
-                    $"stickUp={VanillaTurnInvocationPoc.UpHeld} " +
-                    $"stickDown={VanillaTurnInvocationPoc.DownHeld}.");
+                    $"stickUp={LogicalTurnInjection.UpHeld} " +
+                    $"stickDown={LogicalTurnInjection.DownHeld}.");
                 _lastResult = __result;
                 _hasLast = true;
             }

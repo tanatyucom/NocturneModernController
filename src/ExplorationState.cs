@@ -10,8 +10,10 @@ namespace NocturneModernController
     // false while the Settings window is open (the game is minimized and the
     // field update stops), on the frame Settings closes, in battle, menus and
     // events, and becomes true again on the first field update after that.
-    // GAME binding readiness and request processing, the right stick and the
-    // gameplay features all rely on exactly this behaviour.
+    // GAME binding readiness and request processing, the right stick and
+    // ModernControllerApi.IsExplorationActive rely on exactly this behaviour.
+    // (The standalone gameplay mods keep their own tracker with the same rule,
+    // shared/ExplorationWindow.cs.)
     [HarmonyPatch(typeof(fldPlayer), nameof(fldPlayer.fldPlayerCalc))]
     internal static class ExplorationState
     {

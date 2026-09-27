@@ -78,7 +78,7 @@ internal static class Program
         DashTests.Run();
         FeatureValueApiTests.Run();
         SmartAutoBattleTests.Run();
-        CoreSmartAutoRemovalTests.Run();
+        CoreGameplayAbsenceTests.Run();
     }
 
     private static DefaultBindingCandidate Candidate(int context, string actionId, params int[] buttons) =>
