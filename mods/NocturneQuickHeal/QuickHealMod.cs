@@ -10,10 +10,11 @@ using MelonLoader;
 
 namespace NocturneQuickHeal
 {
-    // Quick Heal as a standalone mod: press RB while exploring to heal the
+    // Quick Heal as a standalone mod: press SELECT while exploring to heal the
     // party with learned recovery skills and real MP. With Nocturne Modern
-    // Controller installed it also appears in Controller's key config and
-    // Settings (optional integration, see ModernControllerIntegration).
+    // Controller installed it also appears in Controller's key config (default
+    // RB there, where Controller suppresses the game's RB turn) and Settings
+    // (optional integration, see ModernControllerIntegration).
     public sealed class QuickHealMod : MelonMod
     {
         internal const string ModVersion = "0.1.0";
@@ -58,7 +59,7 @@ namespace NocturneQuickHeal
             }
             LoggerInstance.Msg(
                 $"[NocturneQuickHeal] Loaded v{ModVersion}; enabled={QuickHealSettings.Current.Enabled}; " +
-                (_integration != null ? "input=Controller key config (" : "input=RB, standalone (") + reason + ").");
+                (_integration != null ? "input=Controller key config (" : "input=SELECT, standalone (") + reason + ").");
         }
 
         public override void OnUpdate()
@@ -80,7 +81,7 @@ namespace NocturneQuickHeal
                 () => QuickHealInput.ReadHeld(
                     _integration != null,
                     () => _integration!.IsHeld(),
-                    StandaloneInput.IsRbHeld));
+                    StandaloneInput.IsSelectHeld));
         }
     }
 }

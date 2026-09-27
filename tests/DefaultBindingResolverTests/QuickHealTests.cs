@@ -105,11 +105,11 @@ internal static class QuickHealTests
         int controllerReads = 0, standaloneReads = 0;
         bool held = QuickHealInput.ReadHeld(true, () => { controllerReads++; return true; }, () => { standaloneReads++; return true; });
         Check(held && controllerReads == 1 && standaloneReads == 0,
-            "integration active: only the Controller action is read (no standalone RB route)");
+            "integration active: only the Controller action is read (no standalone SELECT route)");
 
         held = QuickHealInput.ReadHeld(false, () => { controllerReads++; return true; }, () => { standaloneReads++; return false; });
         Check(!held && controllerReads == 1 && standaloneReads == 1,
-            "integration inactive: only the standalone RB button is read");
+            "integration inactive: only the standalone SELECT button is read");
     }
 
     private static void DetectionFailureFallsBack()

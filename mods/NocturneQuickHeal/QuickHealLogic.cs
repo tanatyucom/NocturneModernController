@@ -4,7 +4,7 @@ namespace NocturneQuickHeal
 {
     // Exactly one input source is read per frame: the Controller action
     // (player's key config) when the integration is active, otherwise the
-    // game's own RB button. Never both, so one press cannot heal twice.
+    // game's own SELECT button. Never both, so one press cannot heal twice.
     internal static class QuickHealInput
     {
         internal static bool ReadHeld(bool integrationActive, Func<bool> controllerHeld, Func<bool> standaloneHeld) =>
