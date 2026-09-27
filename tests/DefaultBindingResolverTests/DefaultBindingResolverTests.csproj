@@ -19,5 +19,8 @@
     <Compile Include="..\..\mods\NocturneForceEncounter\ForceEncounterLogic.cs" Link="ForceEncounterLogic.cs" />
     <Compile Include="..\..\mods\NocturneForceEncounter\ForceEncounterSettings.cs" Link="ForceEncounterSettings.cs" />
     <Compile Include="..\..\mods\NocturneForceEncounter\ModernControllerIntegration.cs" Link="ModernControllerIntegration.cs" />
+    <Compile Include="..\..\mods\NocturneQuickHeal\QuickHealLogic.cs" Link="QuickHeal\QuickHealLogic.cs" />
+    <Compile Include="..\..\mods\NocturneQuickHeal\QuickHealSettings.cs" Link="QuickHeal\QuickHealSettings.cs" />
+    <Compile Include="..\..\mods\NocturneQuickHeal\ModernControllerIntegration.cs" Link="QuickHeal\ModernControllerIntegration.cs" />
   </ItemGroup>
 </Project>

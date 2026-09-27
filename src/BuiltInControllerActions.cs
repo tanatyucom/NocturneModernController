@@ -6,7 +6,6 @@ namespace NocturneModernController
     {
         internal const string Dash = "nocturne-modern-controller.dash";
         internal const string DashKeep = "nocturne-modern-controller.dash-keep";
-        internal const string QuickHeal = "nocturne-modern-controller.quick-heal";
         internal const string OpenSettings = "nocturne-modern-controller.open-settings";
 
         internal static void Register(bool settingsGuiAvailable)
@@ -37,19 +36,6 @@ namespace NocturneModernController
                 DefaultBindings = new List<ControllerDefaultBinding>
                 {
                     new() { Context = ControllerContext.Field, Buttons = new() { ControllerButton.LT, ControllerButton.RT } }
-                }
-            });
-            ModernControllerApi.RegisterAction(new ControllerActionDefinition
-            {
-                ModId = "NocturneModernController",
-                ActionId = QuickHeal,
-                DisplayName = ja ? "クイックヒール" : "Quick Heal",
-                Description = ja ? "所持スキルとMPを使って仲間全員を回復します。" : "Use learned recovery skills and real MP to heal the party.",
-                Contexts = ControllerContext.Field,
-                Behavior = ControllerActionBehavior.Press,
-                DefaultBindings = new List<ControllerDefaultBinding>
-                {
-                    new() { Context = ControllerContext.Field, Buttons = new() { ControllerButton.RB } }
                 }
             });
             if (settingsGuiAvailable)

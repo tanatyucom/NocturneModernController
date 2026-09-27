@@ -1,60 +1,33 @@
 using System;
-using System.Text;
 using Il2Cpp;
 using MelonLoader;
 
-namespace NocturneModernController
+namespace NocturneQuickHeal
 {
-    internal static class QuickHealRuntimeProbe
+    // The heal itself, moved unchanged from Controller's built-in
+    // QuickHealRuntimeProbe: revive first, then HP (best-ranked learned skill
+    // per target), then curable ailments, one action per step, using the
+    // game's own recovery (cmpMisc.cmpRecover) and deducting the real MP cost.
+    // The former start-of-sequence roster dump (FormationFlagProbe.DumpRoster)
+    // was diagnostic logging only and is not carried over.
+    internal static class QuickHealRuntime
     {
-        private static bool _wasHeld;
-        private static bool _healSequenceActive;
-        private static int _nextHealTick;
-        private static int _sequenceActionCount;
+        private const string LogPrefix = "[NocturneQuickHeal] ";
 
-        private const int HealIntervalMilliseconds = 250;
-        private const int MaximumActionsPerSequence = 64;
+        internal static QuickHealSequence Sequence { get; } = new();
 
-        internal static void Sample()
+        internal static void Sample(bool enabled, bool explorationActive, bool settingsOpen, Func<bool> readHeld)
         {
-            if (!ExplorationState.IsExplorationActive)
+            bool runHeal = Sequence.Sample(
+                enabled, explorationActive, settingsOpen, readHeld, Environment.TickCount, out bool started);
+            if (started)
             {
-                _wasHeld = false;
-                _healSequenceActive = false;
-                return;
+                MelonLogger.Msg(LogPrefix + "Q7 AUTO-HEAL started.");
             }
-
-            bool held;
-            try
-            {
-                held = ModernControllerApi.IsHeld(
-                    BuiltInControllerActions.QuickHeal,
-                    ControllerContext.Field);
-            }
-            catch (Exception)
-            {
-                return;
-            }
-
-            if (held && !_wasHeld)
-            {
-                StartHealSequence();
-            }
-            _wasHeld = held;
-
-            if (_healSequenceActive && unchecked(Environment.TickCount - _nextHealTick) >= 0)
+            if (runHeal)
             {
                 RunNextHeal();
             }
-        }
-
-        private static void StartHealSequence()
-        {
-            _healSequenceActive = true;
-            _sequenceActionCount = 0;
-            _nextHealTick = Environment.TickCount;
-            FormationFlagProbe.DumpRoster();
-            MelonLogger.Msg("[NocturneModernController] Q7 AUTO-HEAL started.");
         }
 
         private static void RunNextHeal()
@@ -94,7 +67,7 @@ namespace NocturneModernController
 
                             Il2Cppnewdata_H.datUnitWork_t? source = units[sourceIndex];
                             if (source == null || source.Pointer == IntPtr.Zero || source.hp == 0 ||
-                                GetSourcePriority(sourceIndex, source) != sourcePriority)
+                                RecoverySource.GetPriority(sourceIndex, source.flag) != sourcePriority)
                             {
                                 continue;
                             }
@@ -126,8 +99,8 @@ namespace NocturneModernController
                                     }
 
                                     MelonLogger.Msg(
-                                        $"[NocturneModernController] Q7 AUTO-REVIVE " +
-                                        $"sourceKind={GetSourceKind(sourcePriority)} " +
+                                        LogPrefix + "Q7 AUTO-REVIVE " +
+                                        $"sourceKind={RecoverySource.GetKind(sourcePriority)} " +
                                         $"skill={skillId} src={sourceIndex} dst={targetIndex} " +
                                         $"hp=0->{target.hp}/{target.maxhp} " +
                                         $"bad=0x{statusBefore:X4}->0x{target.badstatus:X4} " +
@@ -171,19 +144,19 @@ namespace NocturneModernController
                     ushort hpBefore = target.hp;
                     ushort mpBefore = candidate.Source.mp;
                     cmpMisc.cmpRecover(candidate.SkillId, candidate.Source, target);
-                    if (target.hp != hpBefore && candidate.Cost > 0 &&
-                        candidate.Source.mp >= candidate.Cost)
+                    if (target.hp != hpBefore && candidate.Rank.Cost > 0 &&
+                        candidate.Source.mp >= candidate.Rank.Cost)
                     {
                         candidate.Source.mp = unchecked(
-                            (ushort)(candidate.Source.mp - candidate.Cost));
+                            (ushort)(candidate.Source.mp - candidate.Rank.Cost));
                     }
                     MelonLogger.Msg(
-                        $"[NocturneModernController] Q7 AUTO-RECOVER " +
-                        $"sourceKind={GetSourceKind(candidate.SourcePriority)} " +
+                        LogPrefix + "Q7 AUTO-RECOVER " +
+                        $"sourceKind={RecoverySource.GetKind(candidate.Rank.SourcePriority)} " +
                         $"skill={candidate.SkillId} src={candidate.SourceIndex} dst={targetIndex} " +
                         $"hp={hpBefore}->{target.hp}/{target.maxhp} " +
-                        $"effect={candidate.Effect} projectedCost={candidate.ProjectedCost} " +
-                        $"cost={candidate.Cost} mp={mpBefore}->{candidate.Source.mp}");
+                        $"effect={candidate.Rank.Effect} projectedCost={candidate.Rank.ProjectedCost} " +
+                        $"cost={candidate.Rank.Cost} mp={mpBefore}->{candidate.Source.mp}");
 
                     ScheduleNextAction();
                     return;
@@ -219,7 +192,7 @@ namespace NocturneModernController
 
                             Il2Cppnewdata_H.datUnitWork_t? source = units[sourceIndex];
                             if (source == null || source.Pointer == IntPtr.Zero || source.hp == 0 ||
-                                GetSourcePriority(sourceIndex, source) != sourcePriority)
+                                RecoverySource.GetPriority(sourceIndex, source.flag) != sourcePriority)
                             {
                                 continue;
                             }
@@ -253,8 +226,8 @@ namespace NocturneModernController
                                     }
 
                                     MelonLogger.Msg(
-                                        $"[NocturneModernController] Q7 AUTO-CURE " +
-                                        $"sourceKind={GetSourceKind(sourcePriority)} " +
+                                        LogPrefix + "Q7 AUTO-CURE " +
+                                        $"sourceKind={RecoverySource.GetKind(sourcePriority)} " +
                                         $"skill={skillId} src={sourceIndex} dst={targetIndex} " +
                                         $"bad=0x{statusBefore:X4}->0x{target.badstatus:X4} " +
                                         $"mask=0x{cureMask:X8} cost={cost} mp={mpBefore}->{source.mp}");
@@ -272,27 +245,15 @@ namespace NocturneModernController
                 }
 
                 StopHealSequence(
-                    _sequenceActionCount == 0
+                    Sequence.ActionCount == 0
                         ? "no wounded/ailing target or usable recovery skill"
                         : "all reachable HP/status recovery completed");
             }
             catch (Exception exception)
             {
-                _healSequenceActive = false;
-                MelonLogger.Warning("[NocturneModernController] Q7 auto-heal failed: " + exception);
+                Sequence.Stop();
+                MelonLogger.Warning(LogPrefix + "Q7 auto-heal failed: " + exception);
             }
-        }
-
-        private static int GetSourcePriority(
-            int sourceIndex,
-            Il2Cppnewdata_H.datUnitWork_t source)
-        {
-            if (sourceIndex == 0)
-            {
-                return 2;
-            }
-
-            return (source.flag & 0x2u) == 0 ? 0 : 1;
         }
 
         private static RecoveryCandidate? FindBestHpRecoveryCandidate(
@@ -318,7 +279,7 @@ namespace NocturneModernController
                     continue;
                 }
 
-                int sourcePriority = GetSourcePriority(sourceIndex, source);
+                int sourcePriority = RecoverySource.GetPriority(sourceIndex, source.flag);
                 int skillCount = Math.Min(source.skillcnt, source.skill.Length);
                 for (int skillIndex = 0; skillIndex < skillCount; skillIndex++)
                 {
@@ -332,20 +293,13 @@ namespace NocturneModernController
                         }
 
                         int cost = Math.Max(0, cmpDrawSkill.cmpGetSkillCost(skillId, source));
-                        int casts = Math.Max(1, (missingHp + effect - 1) / effect);
-                        int projectedCost = checked(cost * casts);
-                        int projectedOverheal = checked((effect * casts) - missingHp);
                         RecoveryCandidate current = new RecoveryCandidate(
                             source,
                             sourceIndex,
-                            sourcePriority,
                             skillId,
-                            effect,
-                            cost,
-                            projectedCost,
-                            projectedOverheal);
+                            RecoveryRank.Create(sourcePriority, effect, cost, missingHp));
 
-                        if (best == null || current.IsBetterThan(best))
+                        if (best == null || current.Rank.IsBetterThan(best.Rank))
                         {
                             best = current;
                         }
@@ -365,80 +319,40 @@ namespace NocturneModernController
             internal RecoveryCandidate(
                 Il2Cppnewdata_H.datUnitWork_t source,
                 int sourceIndex,
-                int sourcePriority,
                 ushort skillId,
-                int effect,
-                int cost,
-                int projectedCost,
-                int projectedOverheal)
+                RecoveryRank rank)
             {
                 Source = source;
                 SourceIndex = sourceIndex;
-                SourcePriority = sourcePriority;
                 SkillId = skillId;
-                Effect = effect;
-                Cost = cost;
-                ProjectedCost = projectedCost;
-                ProjectedOverheal = projectedOverheal;
+                Rank = rank;
             }
 
             internal Il2Cppnewdata_H.datUnitWork_t Source { get; }
             internal int SourceIndex { get; }
-            internal int SourcePriority { get; }
             internal ushort SkillId { get; }
-            internal int Effect { get; }
-            internal int Cost { get; }
-            internal int ProjectedCost { get; }
-            internal int ProjectedOverheal { get; }
-
-            internal bool IsBetterThan(RecoveryCandidate other)
-            {
-                if (SourcePriority != other.SourcePriority)
-                {
-                    return SourcePriority < other.SourcePriority;
-                }
-                if (ProjectedCost != other.ProjectedCost)
-                {
-                    return ProjectedCost < other.ProjectedCost;
-                }
-                if (ProjectedOverheal != other.ProjectedOverheal)
-                {
-                    return ProjectedOverheal < other.ProjectedOverheal;
-                }
-                if (Cost != other.Cost)
-                {
-                    return Cost < other.Cost;
-                }
-                return Effect > other.Effect;
-            }
-        }
-
-        private static string GetSourceKind(int sourcePriority)
-        {
-            return sourcePriority == 0
-                ? "reserve"
-                : sourcePriority == 1 ? "active" : "protagonist";
+            internal RecoveryRank Rank { get; }
         }
 
         private static void ScheduleNextAction()
         {
-            _sequenceActionCount++;
-            if (_sequenceActionCount >= MaximumActionsPerSequence)
+            if (!Sequence.ActionPerformed(Environment.TickCount))
             {
-                StopHealSequence("safety action limit reached");
-            }
-            else
-            {
-                _nextHealTick = unchecked(Environment.TickCount + HealIntervalMilliseconds);
+                LogStopped("safety action limit reached");
             }
         }
 
         private static void StopHealSequence(string reason)
         {
-            _healSequenceActive = false;
+            Sequence.Stop();
+            LogStopped(reason);
+        }
+
+        private static void LogStopped(string reason)
+        {
             MelonLogger.Msg(
-                $"[NocturneModernController] Q7 AUTO-HEAL stopped: {reason}; " +
-                $"actions={_sequenceActionCount}.");
+                LogPrefix + $"Q7 AUTO-HEAL stopped: {reason}; " +
+                $"actions={Sequence.ActionCount}.");
         }
     }
 }

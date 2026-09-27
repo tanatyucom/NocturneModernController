@@ -74,6 +74,7 @@ internal static class Program
         LateRegistrationTests.Run();
         ForceEncounterLogicTests.Run();
         ForceEncounterStandaloneTests.Run();
+        QuickHealTests.Run();
     }
 
     private static DefaultBindingCandidate Candidate(int context, string actionId, params int[] buttons) =>

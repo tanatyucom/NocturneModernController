@@ -6,7 +6,7 @@ using System.Collections.Generic;
 namespace FakeModernController
 {
     public enum ControllerContext { None = 0, Field = 1, Battle = 2 }
-    public enum ControllerButton { None, A, B, X, Y }
+    public enum ControllerButton { None, A, B, X, Y, RB }
     public enum ControllerActionBehavior { Press, Hold }
 
     public sealed class ControllerDefaultBinding
@@ -68,7 +68,7 @@ namespace FakeModernController
 namespace FakeOldController
 {
     public enum ControllerContext { None = 0, Field = 1 }
-    public enum ControllerButton { None, X }
+    public enum ControllerButton { None, X, RB }
     public enum ControllerActionBehavior { Press }
 
     public sealed class ControllerDefaultBinding

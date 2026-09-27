@@ -14,10 +14,10 @@ param(
 # and the ZIP is written with a fixed entry order and timestamp. Building the
 # same commit twice, from any location, gives byte-identical DLLs and ZIP.
 #
-# One run produces two independent packages: the Controller, and the standalone
-# NocturneForceEncounter mod (versioned by its own csproj). The Force Encounter
-# package never contains the Controller and vice versa. Both ZIPs are written
-# as .partial files and only renamed into place once every step has succeeded.
+# One run produces independent packages: the Controller, and each standalone
+# gameplay mod ($standaloneMods, each versioned by its own csproj). A standalone
+# package never contains the Controller and vice versa. All ZIPs are written as
+# .partial files and only renamed into place once every step has succeeded.
 
 $ErrorActionPreference = 'Stop'
 
@@ -103,8 +103,16 @@ try {
     if (-not $Version) {
         $Version = Get-ProjectVersion (Join-Path $workRoot 'NocturneModernController.csproj')
     }
-    $forceEncounterProject = 'mods\NocturneForceEncounter\NocturneForceEncounter.csproj'
-    $forceEncounterVersion = Get-ProjectVersion (Join-Path $workRoot $forceEncounterProject)
+    # Standalone gameplay mods, each packaged on its own and versioned by its csproj.
+    $standaloneMods = @(
+        @{ Name = 'NocturneForceEncounter' },
+        @{ Name = 'NocturneQuickHeal' }
+    )
+    foreach ($mod in $standaloneMods) {
+        $mod.Project = "mods\$($mod.Name)\$($mod.Name).csproj"
+        $mod.Version = Get-ProjectVersion (Join-Path $workRoot $mod.Project)
+        $mod.Dll = Join-Path $workRoot "mods\$($mod.Name)\bin\Release\net6.0\$($mod.Name).dll"
+    }
 
     # MSBuild splits PathMap on '='; the source side must end with a separator.
     $pathMap = "-p:PathMap=$workRoot\=/_/"
@@ -114,9 +122,8 @@ try {
         'NocturneModernController.csproj',
         'helper\NocturneModernController.InputHelper.csproj',
         'settings\NocturneModernController.Settings.csproj',
-        'tests\DefaultBindingResolverTests\DefaultBindingResolverTests.csproj',
-        $forceEncounterProject
-    )
+        'tests\DefaultBindingResolverTests\DefaultBindingResolverTests.csproj'
+    ) + ($standaloneMods | ForEach-Object { $_.Project })
     foreach ($project in $projects) {
         Invoke-Native dotnet (@('build', (Join-Path $workRoot $project)) + $buildOptions)
     }
@@ -127,19 +134,20 @@ try {
     $controllerOutput = Join-Path $workRoot 'bin\Release\net6.0'
     $helperOutput = Join-Path $workRoot 'helper\bin\Release\net6.0'
     $settingsOutput = Join-Path $workRoot 'settings\bin\Release\net6.0-windows'
-    $forceEncounterDll = Join-Path $workRoot 'mods\NocturneForceEncounter\bin\Release\net6.0\NocturneForceEncounter.dll'
 
-    # NocturneForceEncounter must stay standalone: the Controller integration is
-    # reflection-only, so the release DLL may not hard-reference the Controller.
+    # Standalone mods must stay standalone: their Controller integration is
+    # reflection-only, so a release DLL may not hard-reference the Controller.
     # Read in a child process: a reflection-only load cannot be repeated within
     # one AppDomain, and the child's exit releases the worktree file.
-    $forceEncounterReferences = & powershell.exe -NoProfile -NonInteractive -Command `
-        "[Reflection.Assembly]::ReflectionOnlyLoad([IO.File]::ReadAllBytes('$forceEncounterDll')).GetReferencedAssemblies() | ForEach-Object Name"
-    if ($LASTEXITCODE -ne 0 -or -not $forceEncounterReferences) {
-        throw "Cannot read the assembly references of $forceEncounterDll"
-    }
-    if ($forceEncounterReferences -contains 'NocturneModernController') {
-        throw 'NocturneForceEncounter.dll references NocturneModernController.dll; the standalone mod must not.'
+    foreach ($mod in $standaloneMods) {
+        $references = & powershell.exe -NoProfile -NonInteractive -Command `
+            "[Reflection.Assembly]::ReflectionOnlyLoad([IO.File]::ReadAllBytes('$($mod.Dll)')).GetReferencedAssemblies() | ForEach-Object Name"
+        if ($LASTEXITCODE -ne 0 -or -not $references) {
+            throw "Cannot read the assembly references of $($mod.Dll)"
+        }
+        if ($references -contains 'NocturneModernController') {
+            throw "$($mod.Name).dll references NocturneModernController.dll; the standalone mod must not."
+        }
     }
 
     # Package path -> source file. PDBs are not shipped.
@@ -161,18 +169,21 @@ try {
     $entries['LICENSE.txt'] = Join-Path $workRoot 'LICENSE'
     $entries['THIRD_PARTY_NOTICES.txt'] = Join-Path $workRoot 'THIRD_PARTY_NOTICES.txt'
 
-    # Standalone package: no Controller files, no PDB, no settings.json (created at runtime).
-    $forceEncounterEntries = [ordered]@{
-        'Mods/NocturneForceEncounter.dll' = $forceEncounterDll
-        'LICENSE.txt' = Join-Path $workRoot 'LICENSE'
-    }
-
     New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
     Add-Type -AssemblyName System.IO.Compression
     $packages = @(
-        @{ Name = "NocturneModernController-v$Version"; Entries = $entries },
-        @{ Name = "NocturneForceEncounter-v$forceEncounterVersion"; Entries = $forceEncounterEntries }
+        @{ Name = "NocturneModernController-v$Version"; Entries = $entries }
     )
+    # Standalone packages: no Controller files, no PDB, no settings.json (created at runtime).
+    foreach ($mod in $standaloneMods) {
+        $packages += @{
+            Name = "$($mod.Name)-v$($mod.Version)"
+            Entries = [ordered]@{
+                "Mods/$($mod.Name).dll" = $mod.Dll
+                'LICENSE.txt' = Join-Path $workRoot 'LICENSE'
+            }
+        }
+    }
     foreach ($package in $packages) {
         $package.ZipPath = Join-Path $artifactRoot "$($package.Name).zip"
         $package.PartialPath = "$($package.ZipPath).partial"
@@ -184,7 +195,7 @@ try {
     }
 
     Write-Output "Commit:  $commit"
-    Write-Output "Version: $Version (NocturneForceEncounter $forceEncounterVersion)"
+    Write-Output ("Version: $Version (" + (($standaloneMods | ForEach-Object { "$($_.Name) $($_.Version)" }) -join ', ') + ')')
     foreach ($package in $packages) {
         Write-Output "Created $($package.ZipPath)"
     }
@@ -196,7 +207,9 @@ try {
             'Mods/NocturneModernController.Helper/SDL3.dll')) {
         Write-Output ("SHA-256 {0}: {1}" -f $name, (Get-Sha256 $entries[$name]))
     }
-    Write-Output ("SHA-256 Mods/NocturneForceEncounter.dll: {0}" -f (Get-Sha256 $forceEncounterDll))
+    foreach ($mod in $standaloneMods) {
+        Write-Output ("SHA-256 Mods/{0}.dll: {1}" -f $mod.Name, (Get-Sha256 $mod.Dll))
+    }
     foreach ($package in $packages) {
         Write-Output "SHA-256 $($package.Name).zip: $(Get-Sha256 $package.ZipPath)"
     }
