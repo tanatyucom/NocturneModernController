@@ -83,7 +83,8 @@ namespace NocturneModernController
         private static void Prefix()
         {
             RestoreSpeeds();
-            if (SettingsGuiController.IsOpen || !ControllerSettings.Current.DashEnabled)
+            if (SettingsGuiController.IsOpen || !ControllerSettings.Current.DashEnabled ||
+                DashHandoff.ExternalActive)
             {
                 return;
             }
