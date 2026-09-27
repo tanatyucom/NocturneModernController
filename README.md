@@ -2,16 +2,31 @@
 
 [English README](README_EN.md)
 
-『真・女神転生III NOCTURNE HD REMASTER』（Steam版）の入力と探索操作を現代的にする、Windows向けMelonLoader MODです。右スティックカメラ、ダッシュ、探索支援、Smart Auto Battleに加え、場面別キー割当と外部MOD連携に対応した統合設定GUIを提供します。
+『真・女神転生III NOCTURNE HD REMASTER』（Steam版）のコントローラー操作を現代的にする、Windows向けMelonLoader MODです。右スティックカメラ、場面別キー割当、ゲーム本体のキーコンフィグ編集、統合設定GUIを提供し、ゲームプレイ機能のMODをまとめて設定できる土台になります。
 
-現在の公開バージョンは **2.0.3** です。変更内容は[CHANGELOG](CHANGELOG.md)を参照してください。
+現在のバージョンは **3.0.0** です。変更内容は[CHANGELOG](CHANGELOG.md)を参照してください。
 
-## 主な機能
+> **v3.0.0の大きな変更**: ダッシュ、クイックヒール、強制エンカウント、Smart Auto Battleは、Controller本体から**独立したMOD**になりました。v2.0.3以前と同じ機能を使う場合は、対応するMODも導入してください。詳しくは「[v2.0.3からの更新](#v203からの更新)」を参照してください。
+
+## 構成
+
+| 配布物 | 内容 | 必須 |
+|---|---|---|
+| NocturneModernController | コントローラー操作・キー割当・設定GUI（この本体） | 本体 |
+| NocturneForceEncounter | 強制エンカウント | 任意 |
+| NocturneQuickHeal | クイックヒール | 任意 |
+| NocturneModernDash | ダッシュ / ダッシュキープ | 任意 |
+| NocturneSmartAutoBattle | Smart Auto Battle | 任意 |
+
+推奨構成は5つすべてですが、ゲームプレイ機能の4つは必要なものだけ入れられます。4つともController無しでも単体で動作し、Controllerと一緒に入れると設定GUIとキー割当に統合されます。
+
+## Controller本体の機能
 
 ### 右スティックと汎用入力
 
 - 右スティック左右によるダンジョンの標準左右旋回
 - ゲーム内蔵経路を利用した右スティック上下カメラ
+- PUZZLEでの右スティックによる回転（論理入力として注入）
 - `Full Camera`（左右＋上下）と`Horizontal Turn`（左右のみ）
 - Invert X / Invert Y、X/Y感度、デッドゾーン設定
 - ダンジョンのLB/RB旋回を抑止しつつ、BATTLEのRB Passを維持
@@ -19,15 +34,32 @@
 
 右スティック上下はカメラ座標を独自に書き換えません。ゲーム内部の右スティック縦アナログ経路へ入力を渡すため、標準の補間、球面移動、上下限が利用されます。
 
-### Controller内蔵機能
+### 設定とキー割当
 
-- **Dash**: FIELD/DUNGEONとワールドマップで移動速度を上げる。標準はLTまたはRT長押し、LT+RTでKeep切替
-- **Quick Heal**: 探索中に、所持回復スキルと実際のMPを使って前衛・控えを回復。所持している場合だけ蘇生・状態異常回復を行う
-- **Force Encounter（Xボタンで即戦闘）**: 通常エンカウント可能な場所でXを押すと、ゲーム本来の遭遇判定へ即時の戦闘開始要求を渡す
-- **Smart Auto Battle**: ゲーム標準Auto経路を使い、弱点・耐性・反射・吸収・MP・後続メンバーの撃破予測を考慮して行動を選ぶ
-- **統合設定GUI**: 右スティック設定、キー割当、機能ON/OFF、外部Provider表示を一画面で管理
+- **統合設定GUI**: 右スティック設定、キー割当、GAMEキーコンフィグ、MOD機能の設定を一画面で管理
+- **場面別キー割当**: FIELD/DUNGEON、BATTLE、PUZZLE、MENUごと、最大3ボタン同時押し
+- **GAMEキーコンフィグ編集**: ゲーム本体（純正）のキーコンフィグを安全に変更
+- **MOD連携**: ゲームプレイMODのON/OFF、選択式の設定値、キー割当を統合GUIで扱う
 
-Smart Auto Battleは実機で動作していますが、戦術判断はヒューリスティックであり、改善余地があります。
+## ゲームプレイMOD
+
+| MOD | 機能 | 単体での入力 | Controller併用時の既定割当 | 設定ファイル |
+|---|---|---|---|---|
+| NocturneForceEncounter 0.2.0 | 通常エンカウント可能な場所で、ゲーム本来の遭遇判定へ即時の戦闘開始を要求 | X | X（変更可） | `NocturneForceEncounter.settings.json` |
+| NocturneQuickHeal 0.1.0 | 探索中に、所持回復スキルと実際のMPを使って仲間を回復。所持している場合だけ蘇生・状態異常回復 | SELECT | RB（変更可） | `NocturneQuickHeal.settings.json` |
+| NocturneModernDash 0.1.0 | ダンジョンとワールドマップで移動1.5倍。LT+RTでキープ切替 | LT/RT長押し、LT+RTでキープ、キーボードP | LT/RT、キープLT+RT（変更可）、キーボードP | `NocturneModernDash.settings.json` |
+| NocturneSmartAutoBattle 0.1.0 | ゲーム標準Autoの上で、弱点・耐性・MP・撃破予測からコマンドと単体対象を選ぶ。Auto中の速度変更 | ゲーム標準のAutoボタン | 独自の割当なし（ゲーム標準のAutoボタン） | `NocturneSmartAutoBattle.settings.json` |
+
+- クイックヒールが単体時にSELECTを使うのは、Controllerが無い場合RBがゲーム本来の旋回に使われるためです。Controllerは旋回用のLB/RBを抑止するので、併用時はRBになります。
+- Smart Auto Battleのモードは「通常攻撃のみ」（ゲーム標準Autoのまま）と「スキル優先」、速度はx1.0 / x1.5 / x2.0です。新規導入時の既定は「スキル優先」「x1.0」です。速度はゲーム標準AutoがONの戦闘中だけ適用されます。
+- 各MODの設定はそれぞれの設定ファイルに保存されます。Controllerがあれば設定GUIの「MOD機能」タブで変更でき、無い場合は設定ファイルを直接編集します（ゲーム再起動後に反映）。
+
+| MOD | 単体動作 | Controller連携 |
+|---|---|---|
+| NocturneForceEncounter | ○ | ○（Controller 3.0.0以降） |
+| NocturneQuickHeal | ○ | ○（Controller 3.0.0以降） |
+| NocturneModernDash | ○ | ○（Controller 3.0.0以降） |
+| NocturneSmartAutoBattle | ○ | ○（Controller 3.0.0以降。モード・速度の選択はController 3.0.0が必要） |
 
 ## 対応コントローラー
 
@@ -49,7 +81,9 @@ SDL3がゲームパッドとして認識する機器を対象にしています�
 
 ## インストール
 
-配布ZIPをゲームフォルダーへ展開し、次の構成にします。HelperとSettingsの出力一式、および公式SDL配布物の`SDL3.dll`が必要です。
+各ZIPをゲームフォルダー（`smt3hd`）へそのまま展開します。ZIPの中は`Mods/`から始まる構成です。
+
+Controller本体（`NocturneModernController-v3.0.0.zip`）:
 
 ```text
 smt3hd/
@@ -67,7 +101,37 @@ smt3hd/
       SDL3.dll
 ```
 
-PDBは開発用で、通常配布の実行には不要です。Controller DLLは自身と同じディレクトリを基準に、上記Helperフォルダー内のInput HelperとSettings GUIを参照します。
+ゲームプレイMOD（例: `NocturneModernDash-v0.1.0.zip`）は、それぞれDLL 1つです。
+
+```text
+smt3hd/
+  Mods/
+    NocturneForceEncounter.dll
+    NocturneQuickHeal.dll
+    NocturneModernDash.dll
+    NocturneSmartAutoBattle.dll
+```
+
+設定ファイルは初回起動時に`Mods`フォルダーへ作られます。ZIPには含まれません。
+
+## v2.0.3からの更新
+
+v3.0.0では、v2.0.3までController本体に内蔵されていたダッシュ／ダッシュキープ、クイックヒール、強制エンカウント、Smart Auto Battleが**Controllerから削除**され、独立MODになりました。Controllerだけを更新すると、これらの機能は使えなくなります。従来と同じように使うには、対応するMODのZIPも展開してください。
+
+- **設定の引き継ぎ**: 各MODは、自分の設定ファイルが無い初回起動時に、Controllerの設定（`NocturneModernController.settings.json`）から旧設定を読み込みます。
+  - 強制エンカウント: `ForceEncounterEnabled`
+  - クイックヒール: `QuickHealEnabled`
+  - ダッシュ: `DashEnabled`
+  - Smart Auto Battle: `SmartAutoEnabled`、`AutoBattleMode`、`AutoBattleSpeed`と、学習済みの耐性情報（`NocturneModernController.smart-auto-knowledge.json`をコピー）
+
+  引き継ぎ後は各MODの設定ファイルが優先されます。Controller側の旧設定と旧ファイルは削除されず、そのまま残ります。
+- **キー割当の引き継ぎ**: 強制エンカウント、クイックヒール、ダッシュ、ダッシュキープは旧版と同じアクションIDを使うため、変更済みの割当は、MODを導入するとそのまま使われます。
+- **旧「オートバトル」タブ**: 設定GUIから削除されました。Smart Auto Battleのモードと速度は「MOD機能」タブで変更します。
+- **Smart Auto Battleの無効化**: 旧版では「無効」にしてもスキル優先の差し替えや学習が一部動き続けていました。独立版では「無効」にすると速度変更・コマンド差し替え・対象差し替え・学習がすべて止まり、ゲーム標準のAutoだけが動きます。
+
+> **重要**: 新しいゲームプレイMODを**v2.0.3以前のControllerと組み合わせないでください**。旧Controllerには同じ機能が内蔵されているため、処理が二重に動きます（Smart Auto Battleのコマンド二重選択、速度の二重書き込みなど）。ゲームプレイMODを使う場合はController 3.0.0以降にしてください。
+
+ゲームプレイMODを外しても、Controllerのキー割当ファイル（`bindings.json`）に残るそのMODの割当は正常な状態です。同じMODを再導入するとそのまま使われるので、手動で削除する必要はありません。
 
 ## 設定GUIの開き方
 
@@ -83,7 +147,7 @@ PDBは開発用で、通常配布の実行には不要です。Controller DLLは
 - `Press`、`Hold`、`LongPress`、`Toggle`、`DoublePress`のアクション定義
 - R3を含むボタンを割当入力として扱う（ゲーム標準の「視点を正面に戻す」など、標準アクションの追加登録は今後の拡張方針）
 
-既定割当はDashがLT/RT、Dash KeepがLT+RT、Quick HealがRB、Xボタンの即戦闘がForce Encounter、設定画面がSelect長押しです。コンテキスト分離により、FIELDの割当がBATTLEのRB Passなどを無条件に置き換えないようにしています。
+Controller本体の既定割当は、設定画面を開く（Select長押し）だけです。ゲームプレイMODを導入すると、そのMODのアクションが既定割当つきで追加されます（上の表を参照）。コンテキスト分離により、FIELDの割当がBATTLEのRB Passなどを無条件に置き換えないようにしています。
 
 ## GAMEキーコンフィグ
 
@@ -100,46 +164,34 @@ PDBは開発用で、通常配布の実行には不要です。Controller DLLは
 
 ## MOD機能タブ
 
-設定GUIの「MOD機能」タブはFeatureメタデータからカードを動的生成します。Controller自身は次の5件をProviderとして公開します。
+設定GUIの「MOD機能」タブは、各MODが公開する機能情報からカードを動的に作ります。Controller本体のカードは「Right Stick Camera」だけで、ゲームプレイMODを導入するとそのカードが加わります（Smart Auto Battleは有効/無効、モード、速度の3枚）。
 
-- Right Stick Camera
-- Dash
-- Quick Heal
-- Force Encounter
-- Smart Auto Battle
+ON/OFFに加えて選択式の値（例: Smart Auto Battleのモードと速度）も扱えます。MODのファイルが破損・未導入でも、そのMODのカードだけを外し、GUI全体は失敗させません。
 
-Feature 0件、Controller 5件、検証用20件の表示経路とスクロールを確認済みです。Provider単位のJSONが破損・未導入でも、GUI全体を失敗させないよう分離しています。詳細は[Feature Metadata完了報告](docs/FEATURE_METADATA_COMPLETION_REPORT.md)を参照してください。
+## 外部MOD連携
 
-## 外部Provider連携
-
-別MODは`NocturneModern*.features.json`形式のスナップショットを公開することで、Controller DLLを必須参照せず統合GUIへ参加できます。GUIはON/OFFの変更要求をJSONへ保存し、各Providerが自分の設定経路で処理します。これは現時点のメタデータ連携であり、第三者向けの安定SDK、NuGet、互換性保証ではありません。
+ゲームプレイMODはController DLLを参照せず単独で動作し、Controllerが読み込まれている場合だけ実行時に連携します（キー割当、機能カード、選択式の値）。別のMODは`NocturneModern*.features.json`形式のスナップショットでもカードを公開できます。これらは現時点の連携方式であり、第三者向けの安定SDK、NuGet、互換性保証ではありません。
 
 ## 確認済み動作
 
 - ダンジョンで右スティック左右旋回・上下標準カメラ
 - ダンジョンでLB/RB旋回を抑止し、BATTLEでRB Passを維持
-- 病院内とワールドマップでDash
-- LT/RT長押し、LT+RTのDash Keep、速度調整
-- Quick Healの所持スキル・MPに従う連続回復
-- 通常エンカウント可能な場所で、Xボタンから即時の戦闘開始を要求するForce Encounter
-- ゲーム標準Auto経路を利用するSmart Auto BattleとAuto中だけの速度変更・終了時復元
-- 統合設定GUI、キー割当、Controller Feature 5件と外部Provider検出
+- 統合設定GUI、キー割当、MOD機能タブ（ON/OFFと選択式の値）
 - GAMEキーコンフィグの変更（コマンドメニューY→X→Y）: 実入力と純正キーコンフィグ表示への反映、再起動後の保持、往復後に純正設定ファイルが元とバイト単位で一致すること
+- Controller＋ゲームプレイMOD4つ、Controllerのみ、各ゲームプレイMOD単体の各構成での起動と動作
+- v2.0.3の設定・キー割当・Smart Auto学習データからの引き継ぎ
 
-## 未確認・実験中
+## 未確認・制限事項
 
 - PUZZLEの右スティック回転ルートは実装済みですが、実プレイでの最終確認は未完了です。
 - PS/Switch/一般パッドはSDL3対応方針ですが、全機種の実機互換性は未確認です。
-- Smart Auto Battleは動作済みですが、複雑な敵編成や特殊スキルに対する判断改善が残っています。
-- Feature Provider APIは開発中の連携面であり、安定した公開SDKではありません。
+- Smart Auto Battleの戦術判断はヒューリスティックであり、複雑な敵編成や特殊スキルに対する改善余地があります。
+- Smart Auto Battleの速度は、勝利時とAuto解除時に元へ戻ることを実機で確認済みです。逃走・全滅・タイトルへ戻る場合は網羅的には確認していません。
+- MOD連携の方式は開発中の連携面であり、安定した公開SDKではありません。
 
-## ControllerとGameplayの関係
+## 別プロジェクト: NocturneModernGameplay
 
-`NocturneModernController`は入力、設定GUI、既存Controller機能を担当します。ゲームプレイ規則を変更する機能は、別プロジェクト・別配布単位の`NocturneModernGameplay`で開発します。
-
-GameplayはController DLLを必須参照せず単独動作し、Controllerがある場合だけJSONメタデータ経由で統合GUIへ参加します。現在Gameplay側では **Skill Mutation: Learn as New** を実験中です。空き枠への新規追加は実機成功済みですが、8枠満杯時に標準忘却画面を再利用する処理は調査・試験中であり、完成・正式公開済みとは扱いません。GameplayのソースやDLLはこのリポジトリに含まれません。
-
-各MOD単位のZIPと、それらをまとめる任意のパックZIPを想定しています。
+ゲームプレイ規則を変更する実験的な機能（Skill Mutation: Learn as New など）は、別プロジェクト`NocturneModernGameplay`で開発しています。このリポジトリと配布物には含まれず、正式公開済みとは扱いません。
 
 ## ビルド
 
@@ -151,6 +203,8 @@ dotnet build .\helper\NocturneModernController.InputHelper.csproj -c Release --n
 dotnet build .\settings\NocturneModernController.Settings.csproj -c Release --no-restore
 ```
 
+ゲームプレイMODは`mods/`以下のそれぞれのプロジェクトです。
+
 主な出力先:
 
 - Controller: `bin/Release/net6.0/`
@@ -159,15 +213,16 @@ dotnet build .\settings\NocturneModernController.Settings.csproj -c Release --no
 
 `SDL3.dll`はHelperプロジェクトが生成するファイルではありません。`tools/ControllerSideRead/Fetch-Sdl.ps1`は公式SDL 3.4.14 x64 archiveを固定SHA-256で検証して調査用`native/SDL3.dll`を取得します。配布時はライセンス条件を確認し、Helperフォルダーへ同梱してください。
 
-公開用ZIPは次のコマンドで生成できます。出力先は`artifacts/release/NocturneModernController-v2.0.3.zip`です。
+公開用ZIPは次のコマンドで生成できます。一時的なgit worktreeから再現可能な形でビルドし、`artifacts/release/`にController本体とゲームプレイMOD4つのZIPを出力します（バージョンは各プロジェクトの設定値）。
 
 ```powershell
-.\tools\Build-Release.ps1 -Version 2.0.3
+.\tools\Build-Release.ps1
 ```
 
 ## 調査・開発記録
 
-- [開発履歴](docs/DEVELOPMENT_HISTORY.md)
+- [開発履歴](docs/DEVELOPMENT_HISTORY.md)（v2系までの記録を含む）
+- [v3.0.0リリースノート](docs/releases/v3.0.0.md)
 - [Feature Metadata完了報告](docs/FEATURE_METADATA_COMPLETION_REPORT.md)
 - [右スティック・視点・Dash調査](docs/research/RIGHT_STICK_VIEW_AND_DASH_INVESTIGATION.md)
 - [Controller入力レイヤー](docs/controller-input-layer.md)

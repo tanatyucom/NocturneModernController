@@ -2,6 +2,8 @@
 
 この文書はNocturne Modern Controllerの調査・実装経緯を時系列でまとめる。実機確認済みの事実、静的解析から得た知見、未確認・実験中の項目を区別する。
 
+第6〜9節のDash、Quick Heal、Force Encounter、Smart Auto Battleはv2系でController本体に内蔵していた時点の記録である。v3.0.0でこれらは独立MODへ分離した（第13節）。
+
 ## 1. 初期目的
 
 開発の出発点は、SMT3HDのダンジョン左右旋回をLB/RBから右スティックへ移すことだった。同時に、BATTLEで使われるRB Passは維持し、PUZZLEのLB/RB回転も将来的には右スティックへ移す方針とした。ゲーム全体のボタンを一律置換せず、場面ごとの標準操作を保つことを安全条件にした。
@@ -81,3 +83,13 @@ GameplayはController DLLを必須参照せず単独利用できる。Controller
 詳細は[THIRD_PARTY_RESEARCH_POLICY.md](THIRD_PARTY_RESEARCH_POLICY.md)を参照する。第三者MODについては、MIT等のライセンスを確認できた対象・版だけを許可範囲内で参照し、GameBananaやNexus等の配布ページにある別の権限表記と混同しない。
 
 第三者コードを無断コピーせず、挙動、ゲームAPI、メソッド名、データ形式等の調査事実を基に独立実装する。第三者バイナリ・画像・アイコン、およびゲーム本体のDLLやアセットは配布しない。
+
+## 13. v3.0.0: ゲームプレイ機能の独立MOD化
+
+v3.0.0で、Force Encounter、Quick Heal、Dash / Dash Keep、Smart Auto BattleをController本体から削除し、独立MOD（NocturneForceEncounter、NocturneQuickHeal、NocturneModernDash、NocturneSmartAutoBattle）へ分離した。各MODはController DLLを参照せず単体で動作し、Controllerが読み込まれている場合だけ実行時に連携してキー割当と設定GUIへ参加する。Controller本体は入力、右スティックカメラとPUZZLE旋回、キー割当、GAMEキーコンフィグ編集、設定GUI、MOD連携の土台に限定した。
+
+移行は機能ごとに段階を分けた。外部MODを単体で成立させ、Controller併用時は内蔵版を一時的に止める引き継ぎ処理で二重動作が無いことを実機で確認してから、内蔵版を削除した。各MODは初回起動時にControllerの旧設定を引き継ぎ、キー割当は同じアクションIDで再利用される。Controllerの旧設定値はこの引き継ぎのために保持している。
+
+Smart Auto Battleでは、選択式の値（モードと速度）を設定GUIで扱うため、MOD連携に値の設定経路を追加した。無効時の挙動も見直し、独立版では無効にすると速度変更・コマンド差し替え・学習がすべて止まる。
+
+Controller本体のHarmony patchは20から4（探索判定、右スティックカメラ、PUZZLE旋回のPrefix/Postfix）へ減った。リリースZIPはControllerと4つのMODを一時worktreeから再現可能にビルドし、2回のビルドでハッシュが一致することを確認している。
