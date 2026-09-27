@@ -16,6 +16,9 @@
     <Compile Include="..\..\shared\GameBindingWrite.cs" Link="GameBindingWrite.cs" />
     <Compile Include="..\..\shared\GameBindingEdit.cs" Link="GameBindingEdit.cs" />
     <Compile Include="..\..\shared\ExplorationWindow.cs" Link="ExplorationWindow.cs" />
+    <Compile Include="..\..\shared\FeatureValueLabels.cs" Link="FeatureValueLabels.cs" />
+    <Compile Include="..\..\src\FeatureProviderContracts.cs" Link="FeatureProviderContracts.cs" />
+    <Compile Include="..\..\src\FeatureProviderDispatch.cs" Link="FeatureProviderDispatch.cs" />
     <Compile Include="..\..\mods\NocturneForceEncounter\ForceEncounterLogic.cs" Link="ForceEncounterLogic.cs" />
     <Compile Include="..\..\mods\NocturneForceEncounter\ForceEncounterSettings.cs" Link="ForceEncounterSettings.cs" />
     <Compile Include="..\..\mods\NocturneForceEncounter\ModernControllerIntegration.cs" Link="ModernControllerIntegration.cs" />
