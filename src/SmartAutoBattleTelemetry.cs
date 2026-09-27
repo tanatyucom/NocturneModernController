@@ -24,6 +24,11 @@ namespace NocturneModernController
 
         internal static void Sample()
         {
+            if (SmartAutoHandoff.ExternalActive)
+            {
+                return;
+            }
+
             if (unchecked(System.Environment.TickCount - _pollUntilTick) >= 0)
             {
                 return;
@@ -66,6 +71,11 @@ namespace NocturneModernController
         {
             private static void Prefix()
             {
+                if (SmartAutoHandoff.ExternalActive)
+                {
+                    return;
+                }
+
                 _autoSession++;
                 MelonLogger.Msg(
                     $"[NocturneModernController] SMART-AUTO native process initialized; " +
@@ -78,6 +88,13 @@ namespace NocturneModernController
         {
             private static bool Prefix(out string __state)
             {
+                if (SmartAutoHandoff.ExternalActive)
+                {
+                    // The external mod decides whether the game's Auto choice runs.
+                    __state = string.Empty;
+                    return true;
+                }
+
                 __state = DescribeCurrentSelection();
                 if (_manualSelectionInProgress)
                 {
@@ -96,6 +113,11 @@ namespace NocturneModernController
 
             private static void Postfix(string __state)
             {
+                if (SmartAutoHandoff.ExternalActive)
+                {
+                    return;
+                }
+
                 _lastSelection = string.Empty;
                 _pollUntilTick = unchecked(System.Environment.TickCount + 6000);
                 MelonLogger.Msg(
@@ -121,7 +143,7 @@ namespace NocturneModernController
         {
             private static void Prefix(ref nbTarSelProcessData_t t)
             {
-                if (_pendingSingleTargetForm < 0)
+                if (SmartAutoHandoff.ExternalActive || _pendingSingleTargetForm < 0)
                 {
                     return;
                 }
@@ -198,6 +220,11 @@ namespace NocturneModernController
         {
             private static void Postfix(int dformindex)
             {
+                if (SmartAutoHandoff.ExternalActive)
+                {
+                    return;
+                }
+
                 try
                 {
                     int enemyIndex = dformindex - 4;
@@ -931,6 +958,11 @@ namespace NocturneModernController
                 int comm,
                 int nskill)
             {
+                if (SmartAutoHandoff.ExternalActive)
+                {
+                    return;
+                }
+
                 ApplyPendingSingleTarget(a, comm, nskill);
                 LearnActionAffinity(a, comm, nskill);
                 MelonLogger.Msg(
@@ -943,6 +975,11 @@ namespace NocturneModernController
                 int comm,
                 int nskill)
             {
+                if (SmartAutoHandoff.ExternalActive)
+                {
+                    return;
+                }
+
                 MelonLogger.Msg(
                     "[NocturneModernController] SMART-AUTO action command applied; " +
                     $"comm={comm} nskill={nskill} after=[{DescribeAction(a)}].");
@@ -954,6 +991,11 @@ namespace NocturneModernController
         {
             private static void Prefix(ref nbActionProcessData_t a)
             {
+                if (SmartAutoHandoff.ExternalActive)
+                {
+                    return;
+                }
+
                 MelonLogger.Msg(
                     "[NocturneModernController] SMART-AUTO skill action entered; " +
                     $"before=[{DescribeAction(a)}].");
@@ -961,6 +1003,11 @@ namespace NocturneModernController
 
             private static void Postfix(ref nbActionProcessData_t a)
             {
+                if (SmartAutoHandoff.ExternalActive)
+                {
+                    return;
+                }
+
                 MelonLogger.Msg(
                     "[NocturneModernController] SMART-AUTO skill action prepared; " +
                     $"after=[{DescribeAction(a)}].");
@@ -972,6 +1019,11 @@ namespace NocturneModernController
         {
             private static void Postfix(ref nbActionProcessData_t a, int __result)
             {
+                if (SmartAutoHandoff.ExternalActive)
+                {
+                    return;
+                }
+
                 MelonLogger.Msg(
                     "[NocturneModernController] SMART-AUTO action target resolved; " +
                     $"result={__result} [{DescribeAction(a)}].");
@@ -983,6 +1035,11 @@ namespace NocturneModernController
         {
             private static void Postfix()
             {
+                if (SmartAutoHandoff.ExternalActive)
+                {
+                    return;
+                }
+
                 _lastSelection = string.Empty;
                 _pollUntilTick = unchecked(System.Environment.TickCount + 15000);
                 MelonLogger.Msg(
@@ -1008,6 +1065,11 @@ namespace NocturneModernController
         {
             private static void Postfix()
             {
+                if (SmartAutoHandoff.ExternalActive)
+                {
+                    return;
+                }
+
                 MelonLogger.Msg(
                     $"[NocturneModernController] SMART-AUTO panel shown; session={_autoSession}.");
             }
@@ -1018,6 +1080,11 @@ namespace NocturneModernController
         {
             private static void Postfix()
             {
+                if (SmartAutoHandoff.ExternalActive)
+                {
+                    return;
+                }
+
                 MelonLogger.Msg(
                     $"[NocturneModernController] SMART-AUTO panel hidden; session={_autoSession}.");
             }

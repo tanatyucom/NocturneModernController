@@ -78,6 +78,7 @@ internal static class Program
         DashTests.Run();
         FeatureValueApiTests.Run();
         SmartAutoBattleTests.Run();
+        SmartAutoHandoffTests.Run();
     }
 
     private static DefaultBindingCandidate Candidate(int context, string actionId, params int[] buttons) =>

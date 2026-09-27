@@ -16,6 +16,11 @@ namespace NocturneModernController
 
         internal static void Sample()
         {
+            if (SmartAutoHandoff.ExternalActive)
+            {
+                return;
+            }
+
             if (ExplorationState.IsExplorationActive || SettingsGuiController.IsOpen)
             {
                 SetAutoActive(false, "non-battle context");
@@ -90,6 +95,11 @@ namespace NocturneModernController
                 SIPressType __2,
                 bool __result)
             {
+                if (SmartAutoHandoff.ExternalActive)
+                {
+                    return;
+                }
+
                 if (__result && __0 == 0 &&
                     __1 == SIActionName.BTL_AutoBattle && __2 == SIPressType.TRIG)
                 {
@@ -103,6 +113,11 @@ namespace NocturneModernController
         {
             private static void Prefix()
             {
+                if (SmartAutoHandoff.ExternalActive)
+                {
+                    return;
+                }
+
                 SetAutoActive(false, "battle shutdown");
             }
         }
@@ -112,6 +127,11 @@ namespace NocturneModernController
         {
             private static void Prefix()
             {
+                if (SmartAutoHandoff.ExternalActive)
+                {
+                    return;
+                }
+
                 SetAutoActive(false, "battle cleared");
             }
         }
