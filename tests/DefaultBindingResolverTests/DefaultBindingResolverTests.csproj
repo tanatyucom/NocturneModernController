@@ -28,5 +28,10 @@
     <Compile Include="..\..\mods\NocturneModernDash\DashLogic.cs" Link="Dash\DashLogic.cs" />
     <Compile Include="..\..\mods\NocturneModernDash\DashSettings.cs" Link="Dash\DashSettings.cs" />
     <Compile Include="..\..\mods\NocturneModernDash\ModernControllerIntegration.cs" Link="Dash\ModernControllerIntegration.cs" />
+    <Compile Include="..\..\mods\NocturneSmartAutoBattle\SmartAutoDecision.cs" Link="SmartAuto\SmartAutoDecision.cs" />
+    <Compile Include="..\..\mods\NocturneSmartAutoBattle\SmartAutoRuntime.cs" Link="SmartAuto\SmartAutoRuntime.cs" />
+    <Compile Include="..\..\mods\NocturneSmartAutoBattle\SmartAutoSettings.cs" Link="SmartAuto\SmartAutoSettings.cs" />
+    <Compile Include="..\..\mods\NocturneSmartAutoBattle\SmartAutoKnowledge.cs" Link="SmartAuto\SmartAutoKnowledge.cs" />
+    <Compile Include="..\..\mods\NocturneSmartAutoBattle\ModernControllerIntegration.cs" Link="SmartAuto\ModernControllerIntegration.cs" />
   </ItemGroup>
 </Project>
