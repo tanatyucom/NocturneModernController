@@ -26,8 +26,11 @@ internal sealed class SettingsModel
     public float SensitivityX { get; set; } = 1.0f;
     public float SensitivityY { get; set; } = 1.0f;
     public float DeadZone { get; set; } = 0.15f;
-    // Deprecated, migration only (Smart Auto Battle moved to NocturneSmartAutoBattle,
-    // which reads these once): kept so saving settings.json does not drop them.
+    // Legacy migration only: AutoBattleMode, AutoBattleSpeed, DashEnabled,
+    // QuickHealEnabled, ForceEncounterEnabled and SmartAutoEnabled belong to the
+    // standalone gameplay mods, which read them once from settings.json on their
+    // first run. They are not shown here; they stay in this model only so that
+    // saving settings.json does not drop them.
     public AutoBattleMode AutoBattleMode { get; set; } = AutoBattleMode.NormalAttackOnly;
     public float AutoBattleSpeed { get; set; } = 1.0f;
     public bool RightStickEnabled { get; set; } = true;
