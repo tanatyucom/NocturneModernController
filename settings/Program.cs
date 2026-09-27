@@ -26,6 +26,8 @@ internal sealed class SettingsModel
     public float SensitivityX { get; set; } = 1.0f;
     public float SensitivityY { get; set; } = 1.0f;
     public float DeadZone { get; set; } = 0.15f;
+    // Deprecated, migration only (Smart Auto Battle moved to NocturneSmartAutoBattle,
+    // which reads these once): kept so saving settings.json does not drop them.
     public AutoBattleMode AutoBattleMode { get; set; } = AutoBattleMode.NormalAttackOnly;
     public float AutoBattleSpeed { get; set; } = 1.0f;
     public bool RightStickEnabled { get; set; } = true;
@@ -153,8 +155,6 @@ internal sealed class SettingsForm : Form
     private readonly NumericUpDown _sensitivityY = NewNumber(0.10M, 3.00M, 0.05M);
     private readonly NumericUpDown _deadZone = NewNumber(0.00M, 0.95M, 0.01M);
     private readonly ComboBox _context = NewCombo();
-    private readonly ComboBox _autoBattleMode = NewCombo();
-    private readonly ComboBox _autoBattleSpeed = NewCombo();
     private readonly ControllerCanvas _padPanel = new ControllerCanvas();
     private readonly Dictionary<ControllerButton, Button> _padButtons = new();
     private readonly ToolTip _bindingTips = new ToolTip();
@@ -211,7 +211,6 @@ internal sealed class SettingsForm : Form
         tabs.TabPages.Add(BuildBindingsPage());
         tabs.TabPages.Add(BuildGameBindingsPage());
         tabs.TabPages.Add(BuildCameraPage());
-        tabs.TabPages.Add(BuildAutoBattlePage());
         tabs.TabPages.Add(BuildFeaturesPage());
         Controls.Add(tabs);
         Controls.Add(BuildButtons());
@@ -546,33 +545,6 @@ internal sealed class SettingsForm : Form
         return page;
     }
 
-    private TabPage BuildAutoBattlePage()
-    {
-        var page = NewPage(L("オートバトル", "Auto Battle"));
-        _autoBattleMode.Items.AddRange(new object[] { "Normal Attack Only", "Skill Priority (Test)" });
-        _autoBattleSpeed.Items.AddRange(new object[] { "1.0x", "1.5x", "2.0x" });
-        _autoBattleMode.SelectedIndex = 0;
-        _autoBattleSpeed.SelectedIndex = 0;
-        var grid = new TableLayoutPanel
-        {
-            Location = new Point(30, 35), Size = new Size(650, 130), ColumnCount = 2
-        };
-        AddRow(grid, "Auto Battle Mode", _autoBattleMode);
-        AddRow(grid, "Auto Battle Speed", _autoBattleSpeed);
-        page.Controls.Add(grid);
-        page.Controls.Add(new Label
-        {
-            Text = L("Normal Attack Only はゲーム標準Autoの安全なコマンド経路を使用します。\n" +
-                     "Skill Priority は安全な弱点スキルを優先し、危険時は通常攻撃へ戻ります。\n" +
-                     "速度変更は標準AutoがONの戦闘中だけ適用されます。",
-                     "Normal Attack Only uses the game's safe standard Auto command path.\n" +
-                     "Skill Priority favors safe weakness attacks and falls back to normal attacks when needed.\n" +
-                     "Speed changes apply only while standard Auto is active in battle."),
-            Location = new Point(30, 185), AutoSize = true, ForeColor = Color.Gainsboro
-        });
-        return page;
-    }
-
     private TabPage BuildFeaturesPage()
     {
         var page = NewPage(L("MOD機能", "MOD Features"));
@@ -873,10 +845,6 @@ internal sealed class SettingsForm : Form
         _sensitivityX.Value = Clamp((decimal)model.SensitivityX, _sensitivityX);
         _sensitivityY.Value = Clamp((decimal)model.SensitivityY, _sensitivityY);
         _deadZone.Value = Clamp((decimal)model.DeadZone, _deadZone);
-        _autoBattleMode.SelectedIndex = model.AutoBattleMode == AutoBattleMode.SkillPriority ? 1 : 0;
-        _autoBattleSpeed.SelectedIndex = model.AutoBattleSpeed >= 1.9f
-            ? 2
-            : model.AutoBattleSpeed >= 1.4f ? 1 : 0;
     }
 
     private void SaveAndClose()
@@ -890,12 +858,6 @@ internal sealed class SettingsForm : Form
         settings.SensitivityX = (float)_sensitivityX.Value;
         settings.SensitivityY = (float)_sensitivityY.Value;
         settings.DeadZone = (float)_deadZone.Value;
-        settings.AutoBattleMode = _autoBattleMode.SelectedIndex == 1
-                ? AutoBattleMode.SkillPriority
-                : AutoBattleMode.NormalAttackOnly;
-        settings.AutoBattleSpeed = _autoBattleSpeed.SelectedIndex == 2
-                ? 2.0f
-                : _autoBattleSpeed.SelectedIndex == 1 ? 1.5f : 1.0f;
         var options = new JsonSerializerOptions { WriteIndented = true };
         AtomicJsonFile.WriteJsonAtomic(_settingsPath, JsonSerializer.Serialize(settings, options));
         BindingFileMigration.CreateLegacyBackupOnce(
@@ -1317,7 +1279,6 @@ internal sealed class SettingsForm : Form
         return feature.Id switch
         {
             "right_stick_camera" => "Use the right stick for dungeon turning and vertical camera control.",
-            "smart_auto" => "Choose standard Auto commands using weaknesses, resistances, MP, and attack predictions.",
             _ => feature.Description
         };
     }

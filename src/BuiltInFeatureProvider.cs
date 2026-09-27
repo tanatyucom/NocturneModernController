@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 
 namespace NocturneModernController
 {
@@ -16,16 +15,12 @@ namespace NocturneModernController
         {
             ControllerSettings settings = ControllerSettings.Current;
             bool ja = ControllerSettings.UseJapanese;
-            FeatureMetadata[] features =
+            return new[]
             {
                 Feature("right_stick_camera", "Right Stick Camera",
                     ja ? "右スティックでダンジョンの旋回・カメラ上下を操作します。" : "Use the right stick for dungeon turning and vertical camera control.",
-                    "QoL", settings.RightStickEnabled, 10),
-                Feature("smart_auto", "Smart Auto Battle",
-                    ja ? "弱点・耐性・MP・通常攻撃予測を使って標準Autoのコマンドを選択します。" : "Choose standard Auto commands using weaknesses, resistances, MP, and attack predictions.",
-                    "Gameplay Change", settings.SmartAutoEnabled, 50)
+                    "QoL", settings.RightStickEnabled, 10)
             };
-            return SmartAutoHandoffRules.BuiltInFeatures(features, SmartAutoHandoff.ExternalActive).ToArray();
         }
 
         public bool SetFeatureEnabled(string featureId, bool enabled)
@@ -34,11 +29,6 @@ namespace NocturneModernController
             switch (featureId.ToLowerInvariant())
             {
                 case "right_stick_camera": settings.RightStickEnabled = enabled; break;
-                case "smart_auto":
-                    if (SmartAutoHandoff.ExternalActive) return false;
-                    settings.SmartAutoEnabled = enabled;
-                    if (!enabled) SmartAutoBattleRuntime.Shutdown();
-                    break;
                 default: return false;
             }
             ControllerSettings.Save();
