@@ -42,7 +42,7 @@ namespace NocturneModernController
             ExplorationCursorController.Update(modActionsActive);
             if (modActionsActive)
             {
-                if (ControllerSettings.Current.QuickHealEnabled)
+                if (ControllerSettings.Current.QuickHealEnabled && !QuickHealHandoff.ExternalActive)
                 {
                     QuickHealRuntimeProbe.Sample();
                 }
