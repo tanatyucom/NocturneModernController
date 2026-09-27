@@ -175,8 +175,6 @@ namespace NocturneModernController
             return true;
         }
 
-        internal static bool HasFeatureProvider(string providerId) => FeatureProviders.ContainsKey(providerId);
-
         public static IReadOnlyList<FeatureProviderMetadata> GetFeatureProviders()
         {
             var result = new List<FeatureProviderMetadata>();

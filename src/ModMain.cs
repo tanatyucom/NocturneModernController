@@ -40,13 +40,6 @@ namespace NocturneModernController
             bool modActionsActive = explorationActive && !SettingsGuiController.IsOpen;
             ExternalInputBridge.UpdateGameContext(modActionsActive);
             ExplorationCursorController.Update(modActionsActive);
-            if (modActionsActive)
-            {
-                if (ControllerSettings.Current.QuickHealEnabled && !QuickHealHandoff.ExternalActive)
-                {
-                    QuickHealRuntimeProbe.Sample();
-                }
-            }
         }
 
         public override void OnDeinitializeMelon()

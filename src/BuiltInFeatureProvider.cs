@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 
 namespace NocturneModernController
 {
@@ -24,13 +23,10 @@ namespace NocturneModernController
                 Feature("dash", "Dash",
                     ja ? "ダンジョンとワールドマップで移動速度を上げます。" : "Increase movement speed in dungeons and on the world map.",
                     "QoL", settings.DashEnabled, 20),
-                Feature("quick_heal", "Quick Heal",
-                    ja ? "探索中に回復スキルを使ってパーティをまとめて回復します。" : "Use learned recovery skills and real MP to heal the party while exploring.",
-                    "QoL", settings.QuickHealEnabled, 30),
                 Feature("smart_auto", "Smart Auto Battle",
                     ja ? "弱点・耐性・MP・通常攻撃予測を使って標準Autoのコマンドを選択します。" : "Choose standard Auto commands using weaknesses, resistances, MP, and attack predictions.",
                     "Gameplay Change", settings.SmartAutoEnabled, 50)
-            }.Where(feature => feature.Id != "quick_heal" || !QuickHealHandoff.ExternalActive).ToArray();
+            };
         }
 
         public bool SetFeatureEnabled(string featureId, bool enabled)
@@ -40,7 +36,6 @@ namespace NocturneModernController
             {
                 case "right_stick_camera": settings.RightStickEnabled = enabled; break;
                 case "dash": settings.DashEnabled = enabled; break;
-                case "quick_heal": settings.QuickHealEnabled = enabled; break;
                 case "smart_auto":
                     settings.SmartAutoEnabled = enabled;
                     if (!enabled) SmartAutoBattleRuntime.Shutdown();
