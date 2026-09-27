@@ -13,6 +13,11 @@ param(
 # ContinuousIntegrationBuild + PathMap so the temporary path is not embedded,
 # and the ZIP is written with a fixed entry order and timestamp. Building the
 # same commit twice, from any location, gives byte-identical DLLs and ZIP.
+#
+# One run produces two independent packages: the Controller, and the standalone
+# NocturneForceEncounter mod (versioned by its own csproj). The Force Encounter
+# package never contains the Controller and vice versa. Both ZIPs are written
+# as .partial files and only renamed into place once every step has succeeded.
 
 $ErrorActionPreference = 'Stop'
 
@@ -34,6 +39,51 @@ function Get-Sha256([string]$Path) {
     (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash
 }
 
+function Get-ProjectVersion([string]$ProjectPath) {
+    [xml]$project = Get-Content -LiteralPath $ProjectPath -Raw
+    $projectVersion = ($project.Project.PropertyGroup | Where-Object { $_.Version } | Select-Object -First 1).Version
+    if (-not $projectVersion) {
+        throw "Version not found in $ProjectPath"
+    }
+    $projectVersion
+}
+
+# Writes $Entries (package path -> source file) with a fixed order and timestamp.
+function Write-DeterministicZip([System.Collections.IDictionary]$Entries, [string]$Path) {
+    foreach ($source in $Entries.Values) {
+        if (-not (Test-Path -LiteralPath $source)) {
+            throw "Required release file is missing: $source"
+        }
+    }
+    if (Test-Path -LiteralPath $Path) {
+        Remove-Item -LiteralPath $Path -Force
+    }
+    $zipStream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew)
+    try {
+        $archive = [IO.Compression.ZipArchive]::new($zipStream, [IO.Compression.ZipArchiveMode]::Create)
+        try {
+            foreach ($name in ($Entries.Keys | Sort-Object -CaseSensitive)) {
+                $entry = $archive.CreateEntry($name, [IO.Compression.CompressionLevel]::Optimal)
+                $entry.LastWriteTime = $zipTimestamp
+                $entryStream = $entry.Open()
+                try {
+                    $bytes = [IO.File]::ReadAllBytes($Entries[$name])
+                    $entryStream.Write($bytes, 0, $bytes.Length)
+                }
+                finally {
+                    $entryStream.Dispose()
+                }
+            }
+        }
+        finally {
+            $archive.Dispose()
+        }
+    }
+    finally {
+        $zipStream.Dispose()
+    }
+}
+
 if (-not (Test-Path -LiteralPath $sdlPath)) {
     throw "SDL3.dll is missing: $sdlPath (run tools\ControllerSideRead\Fetch-Sdl.ps1)"
 }
@@ -45,17 +95,16 @@ if ($LASTEXITCODE -ne 0 -or -not $commit) {
 
 $workRoot = Join-Path ([IO.Path]::GetTempPath()) ("nmc-release-" + [Guid]::NewGuid().ToString('N'))
 $worktreeAdded = $false
+$partialZips = @()
 try {
     Invoke-Native git @('-C', $repositoryRoot, 'worktree', 'add', '--detach', $workRoot, $commit)
     $worktreeAdded = $true
 
     if (-not $Version) {
-        [xml]$coreProject = Get-Content -LiteralPath (Join-Path $workRoot 'NocturneModernController.csproj') -Raw
-        $Version = ($coreProject.Project.PropertyGroup | Where-Object { $_.Version } | Select-Object -First 1).Version
-        if (-not $Version) {
-            throw 'Version not found in NocturneModernController.csproj'
-        }
+        $Version = Get-ProjectVersion (Join-Path $workRoot 'NocturneModernController.csproj')
     }
+    $forceEncounterProject = 'mods\NocturneForceEncounter\NocturneForceEncounter.csproj'
+    $forceEncounterVersion = Get-ProjectVersion (Join-Path $workRoot $forceEncounterProject)
 
     # MSBuild splits PathMap on '='; the source side must end with a separator.
     $pathMap = "-p:PathMap=$workRoot\=/_/"
@@ -65,7 +114,8 @@ try {
         'NocturneModernController.csproj',
         'helper\NocturneModernController.InputHelper.csproj',
         'settings\NocturneModernController.Settings.csproj',
-        'tests\DefaultBindingResolverTests\DefaultBindingResolverTests.csproj'
+        'tests\DefaultBindingResolverTests\DefaultBindingResolverTests.csproj',
+        $forceEncounterProject
     )
     foreach ($project in $projects) {
         Invoke-Native dotnet (@('build', (Join-Path $workRoot $project)) + $buildOptions)
@@ -77,6 +127,20 @@ try {
     $controllerOutput = Join-Path $workRoot 'bin\Release\net6.0'
     $helperOutput = Join-Path $workRoot 'helper\bin\Release\net6.0'
     $settingsOutput = Join-Path $workRoot 'settings\bin\Release\net6.0-windows'
+    $forceEncounterDll = Join-Path $workRoot 'mods\NocturneForceEncounter\bin\Release\net6.0\NocturneForceEncounter.dll'
+
+    # NocturneForceEncounter must stay standalone: the Controller integration is
+    # reflection-only, so the release DLL may not hard-reference the Controller.
+    # Read in a child process: a reflection-only load cannot be repeated within
+    # one AppDomain, and the child's exit releases the worktree file.
+    $forceEncounterReferences = & powershell.exe -NoProfile -NonInteractive -Command `
+        "[Reflection.Assembly]::ReflectionOnlyLoad([IO.File]::ReadAllBytes('$forceEncounterDll')).GetReferencedAssemblies() | ForEach-Object Name"
+    if ($LASTEXITCODE -ne 0 -or -not $forceEncounterReferences) {
+        throw "Cannot read the assembly references of $forceEncounterDll"
+    }
+    if ($forceEncounterReferences -contains 'NocturneModernController') {
+        throw 'NocturneForceEncounter.dll references NocturneModernController.dll; the standalone mod must not.'
+    }
 
     # Package path -> source file. PDBs are not shipped.
     $entries = [ordered]@{
@@ -97,48 +161,33 @@ try {
     $entries['LICENSE.txt'] = Join-Path $workRoot 'LICENSE'
     $entries['THIRD_PARTY_NOTICES.txt'] = Join-Path $workRoot 'THIRD_PARTY_NOTICES.txt'
 
-    foreach ($source in $entries.Values) {
-        if (-not (Test-Path -LiteralPath $source)) {
-            throw "Required release file is missing: $source"
-        }
+    # Standalone package: no Controller files, no PDB, no settings.json (created at runtime).
+    $forceEncounterEntries = [ordered]@{
+        'Mods/NocturneForceEncounter.dll' = $forceEncounterDll
+        'LICENSE.txt' = Join-Path $workRoot 'LICENSE'
     }
 
     New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
-    $packageName = "NocturneModernController-v$Version"
-    $zipPath = Join-Path $artifactRoot "$packageName.zip"
-    if (Test-Path -LiteralPath $zipPath) {
-        Remove-Item -LiteralPath $zipPath -Force
-    }
-
     Add-Type -AssemblyName System.IO.Compression
-    $zipStream = [IO.File]::Open($zipPath, [IO.FileMode]::CreateNew)
-    try {
-        $archive = [IO.Compression.ZipArchive]::new($zipStream, [IO.Compression.ZipArchiveMode]::Create)
-        try {
-            foreach ($name in ($entries.Keys | Sort-Object -CaseSensitive)) {
-                $entry = $archive.CreateEntry($name, [IO.Compression.CompressionLevel]::Optimal)
-                $entry.LastWriteTime = $zipTimestamp
-                $entryStream = $entry.Open()
-                try {
-                    $bytes = [IO.File]::ReadAllBytes($entries[$name])
-                    $entryStream.Write($bytes, 0, $bytes.Length)
-                }
-                finally {
-                    $entryStream.Dispose()
-                }
-            }
-        }
-        finally {
-            $archive.Dispose()
-        }
+    $packages = @(
+        @{ Name = "NocturneModernController-v$Version"; Entries = $entries },
+        @{ Name = "NocturneForceEncounter-v$forceEncounterVersion"; Entries = $forceEncounterEntries }
+    )
+    foreach ($package in $packages) {
+        $package.ZipPath = Join-Path $artifactRoot "$($package.Name).zip"
+        $package.PartialPath = "$($package.ZipPath).partial"
+        $partialZips += $package.PartialPath
+        Write-DeterministicZip $package.Entries $package.PartialPath
     }
-    finally {
-        $zipStream.Dispose()
+    foreach ($package in $packages) {
+        Move-Item -LiteralPath $package.PartialPath -Destination $package.ZipPath -Force
     }
 
     Write-Output "Commit:  $commit"
-    Write-Output "Version: $Version"
-    Write-Output "Created $zipPath"
+    Write-Output "Version: $Version (NocturneForceEncounter $forceEncounterVersion)"
+    foreach ($package in $packages) {
+        Write-Output "Created $($package.ZipPath)"
+    }
     foreach ($name in @('Mods/NocturneModernController.dll',
             'Mods/NocturneModernController.Helper/NocturneModernController.Settings.dll',
             'Mods/NocturneModernController.Helper/NocturneModernController.Settings.exe',
@@ -147,9 +196,17 @@ try {
             'Mods/NocturneModernController.Helper/SDL3.dll')) {
         Write-Output ("SHA-256 {0}: {1}" -f $name, (Get-Sha256 $entries[$name]))
     }
-    Write-Output "SHA-256 ${packageName}.zip: $(Get-Sha256 $zipPath)"
+    Write-Output ("SHA-256 Mods/NocturneForceEncounter.dll: {0}" -f (Get-Sha256 $forceEncounterDll))
+    foreach ($package in $packages) {
+        Write-Output "SHA-256 $($package.Name).zip: $(Get-Sha256 $package.ZipPath)"
+    }
 }
 finally {
+    foreach ($partialZip in $partialZips) {
+        if (Test-Path -LiteralPath $partialZip) {
+            Remove-Item -LiteralPath $partialZip -Force -ErrorAction SilentlyContinue
+        }
+    }
     if ($worktreeAdded) {
         & git -C $repositoryRoot worktree remove --force $workRoot
     }
