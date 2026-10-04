@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace NocturneQuickHeal
 {
@@ -23,6 +24,7 @@ namespace NocturneQuickHeal
         internal const int HealIntervalMilliseconds = 250;
         internal const int MaximumActionsPerSequence = 64;
 
+        private readonly HashSet<int> _ineffectiveHpTargets = new();
         private bool _wasHeld;
         private bool _active;
         private int _nextHealTick;
@@ -30,6 +32,14 @@ namespace NocturneQuickHeal
 
         internal bool IsActive => _active;
         internal int ActionCount => _actionCount;
+
+        // A target whose HP did not move after a recovery (its maxhp field can
+        // sit above the HP the game will actually restore to) is skipped for
+        // the rest of this sequence, so it cannot starve other targets and
+        // burn the action limit. Cleared when a new sequence starts.
+        internal bool IsHpTargetIneffective(int targetIndex) => _ineffectiveHpTargets.Contains(targetIndex);
+
+        internal void MarkHpTargetIneffective(int targetIndex) => _ineffectiveHpTargets.Add(targetIndex);
 
         // Controller only sampled Quick Heal while the feature was enabled,
         // field exploration was active and Settings was closed; outside that,
@@ -60,6 +70,7 @@ namespace NocturneQuickHeal
             {
                 _active = true;
                 _actionCount = 0;
+                _ineffectiveHpTargets.Clear();
                 _nextHealTick = nowTick;
                 started = true;
             }
@@ -108,6 +119,23 @@ namespace NocturneQuickHeal
                 ? "reserve"
                 : sourcePriority == 1 ? "active" : "protagonist";
         }
+    }
+
+    // Which targets a recovery skill can actually reach. cmpMisc.cmpRecover
+    // (ISIL dump, cmpMisc.txt) applies cmpExecRecover to pDst only when
+    // cmpGetSkillTargetArea(SkillID) == 1 (single target); for any other
+    // area (e.g. メディア) it ignores pDst and heals each active party
+    // member (unit flag bit 0x2) instead. A reserve demon can therefore only
+    // be healed by a single-target skill - choosing a party-wide one for it
+    // changed nothing (2026-10-03 logs: dst=4/6/8/10, メディア, hp unchanged).
+    internal static class RecoveryTarget
+    {
+        internal const int SingleTargetArea = 1;
+
+        internal static bool IsInActiveParty(uint flag) => (flag & 0x2u) != 0;
+
+        internal static bool CanReach(int targetArea, bool targetInParty) =>
+            targetArea == SingleTargetArea || targetInParty;
     }
 
     // Ranking of one HP recovery option for one target.

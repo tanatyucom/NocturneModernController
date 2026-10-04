@@ -17,12 +17,14 @@ internal static class QuickHealTests
         Gates();
         OnePressOneSequence();
         SequenceTimingAndLimit();
+        IneffectiveHpTargetSkipped();
         InputRouting();
         DetectionFailureFallsBack();
         OlderControllerStillIntegrates();
         IntegrationRegistersActionAndProvider();
         SettingsPersistenceAndMigration();
         RecoverySourcePriority();
+        RecoveryTargetReach();
         RecoveryRanking();
     }
 
@@ -98,6 +100,20 @@ internal static class QuickHealTests
         Check(!limited.ActionPerformed(0) && !limited.IsActive &&
               limited.ActionCount == QuickHealSequence.MaximumActionsPerSequence,
             "the 64th action ends the sequence");
+    }
+
+    private static void IneffectiveHpTargetSkipped()
+    {
+        var sequence = new QuickHealSequence();
+        Sample(sequence, true, true, false, true, 0, out _);
+        Check(!sequence.IsHpTargetIneffective(4), "targets start eligible");
+        sequence.MarkHpTargetIneffective(4);
+        Check(sequence.IsHpTargetIneffective(4) && !sequence.IsHpTargetIneffective(0),
+            "a target whose HP did not move is skipped, others are not");
+        Check(sequence.ActionCount == 0, "a no-effect recovery is not counted as an action");
+        Sample(sequence, true, true, false, false, 10, out _);
+        Sample(sequence, true, true, false, true, 20, out bool started);
+        Check(started && !sequence.IsHpTargetIneffective(4), "a new press clears the skipped targets");
     }
 
     private static void InputRouting()
@@ -218,6 +234,17 @@ internal static class QuickHealTests
               RecoverySource.GetKind(1) == "active",
             "demon with flag 0x2 is an active party source");
         Check(RecoverySource.GetKind(2) == "protagonist", "kind names");
+    }
+
+    private static void RecoveryTargetReach()
+    {
+        Check(RecoveryTarget.IsInActiveParty(0x2u) && RecoveryTarget.IsInActiveParty(0x3u) &&
+              !RecoveryTarget.IsInActiveParty(0), "flag 0x2 marks the active party");
+        Check(RecoveryTarget.CanReach(RecoveryTarget.SingleTargetArea, false) &&
+              RecoveryTarget.CanReach(RecoveryTarget.SingleTargetArea, true),
+            "a single-target skill reaches party and reserve targets");
+        Check(RecoveryTarget.CanReach(2, true) && !RecoveryTarget.CanReach(2, false),
+            "a party-wide skill (e.g. メディア) cannot heal a reserve demon");
     }
 
     private static void RecoveryRanking()
