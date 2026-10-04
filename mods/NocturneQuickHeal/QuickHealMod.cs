@@ -78,6 +78,7 @@ namespace NocturneQuickHeal
                 QuickHealSettings.Current.Enabled,
                 ExplorationTracker.IsExplorationActive,
                 settingsOpen,
+                AutoMapState.IsOpen(),
                 () => QuickHealInput.ReadHeld(
                     _integration != null,
                     () => _integration!.IsHeld(),

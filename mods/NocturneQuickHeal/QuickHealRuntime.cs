@@ -16,10 +16,18 @@ namespace NocturneQuickHeal
 
         internal static QuickHealSequence Sequence { get; } = new();
 
-        internal static void Sample(bool enabled, bool explorationActive, bool settingsOpen, Func<bool> readHeld)
+        internal static void Sample(
+            bool enabled, bool explorationActive, bool settingsOpen, bool mapOpen, Func<bool> readHeld)
         {
             bool runHeal = Sequence.Sample(
-                enabled, explorationActive, settingsOpen, readHeld, Environment.TickCount, out bool started);
+                enabled, explorationActive, settingsOpen, mapOpen, readHeld, Environment.TickCount,
+                out bool started, out bool suppressedByMap);
+            if (suppressedByMap)
+            {
+                MelonLogger.Msg(
+                    LogPrefix + "QUICKHEAL-SUPPRESS reason=map-open; " +
+                    $"activeSequence={Sequence.IsActive}.");
+            }
             if (started)
             {
                 MelonLogger.Msg(LogPrefix + "Q7 AUTO-HEAL started.");
