@@ -75,6 +75,7 @@ internal static class Program
         ForceEncounterLogicTests.Run();
         ForceEncounterStandaloneTests.Run();
         QuickHealTests.Run();
+        InputHelperReconnectTests.Run();
         DashTests.Run();
         FeatureValueApiTests.Run();
         SmartAutoBattleTests.Run();
