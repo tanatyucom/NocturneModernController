@@ -35,5 +35,6 @@
     <Compile Include="..\..\mods\NocturneSmartAutoBattle\SmartAutoSettings.cs" Link="SmartAuto\SmartAutoSettings.cs" />
     <Compile Include="..\..\mods\NocturneSmartAutoBattle\SmartAutoKnowledge.cs" Link="SmartAuto\SmartAutoKnowledge.cs" />
     <Compile Include="..\..\mods\NocturneSmartAutoBattle\ModernControllerIntegration.cs" Link="SmartAuto\ModernControllerIntegration.cs" />
+    <Compile Include="..\..\helper\GamepadReconnectState.cs" Link="Helper\GamepadReconnectState.cs" />
   </ItemGroup>
 </Project>

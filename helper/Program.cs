@@ -39,16 +39,24 @@ internal static class Program
         view.Write(32, 0);
         bool cursorHidden = false;
         int trackedGamePid = 0;
+        var reconnect = new GamepadReconnectState();
+        string openedVidPid = string.Empty;
+        IntPtr sdlEvent = Marshal.AllocHGlobal(SdlEventSize);
 
         try
         {
             while (ParentIsAlive(parentPid) && view.ReadInt32(24) != StopRequested)
             {
                 SdlNative.SDL_UpdateJoysticks();
-                if (gamepad == IntPtr.Zero && retry-- <= 0)
+                HandleDeviceEvents(sdlEvent, reconnect, ref gamepad, ref openedVidPid, trackedGamePid);
+                if (gamepad == IntPtr.Zero && reconnect.AllowsPeriodicRetry && retry-- <= 0)
                 {
                     gamepad = TryOpenValidatedGamepad();
                     Log(gamepad == IntPtr.Zero ? "TARGET WAIT" : "TARGET OPEN");
+                    if (gamepad != IntPtr.Zero)
+                    {
+                        RecordOpened(gamepad, reconnect, out openedVidPid);
+                    }
                     retry = 120;
                 }
 
@@ -90,6 +98,7 @@ internal static class Program
             {
                 SdlNative.SDL_CloseGamepad(gamepad);
             }
+            Marshal.FreeHGlobal(sdlEvent);
 
             // SDL_Quit is intentionally omitted because Q2 found that it can
             // block indefinitely with reWASD and Steam Input active.
@@ -149,6 +158,79 @@ internal static class Program
         {
             return false;
         }
+    }
+
+    // SDL3 SDL_Event: 128-byte union; type (Uint32) at 0. For
+    // SDL_GamepadDeviceEvent: type, reserved (Uint32), timestamp (Uint64),
+    // which (SDL_JoystickID) at 16.
+    private const int SdlEventSize = 128;
+    private const int SdlEventWhichOffset = 16;
+    private const uint SdlEventGamepadAdded = 0x653;
+    private const uint SdlEventGamepadRemoved = 0x654;
+
+    // Drains the SDL event queue once per loop (no extra polling) and acts
+    // only on gamepad ADDED / REMOVED. While the opened gamepad stays
+    // connected nothing changes; when it is removed the handle is closed (the
+    // loop then writes active=0, x=0, y=0 to the map) and the next ADDED
+    // reruns the existing validated selection.
+    private static void HandleDeviceEvents(
+        IntPtr sdlEvent, GamepadReconnectState reconnect, ref IntPtr gamepad, ref string openedVidPid, int gamePid)
+    {
+        while (SdlNative.SDL_PollEvent(sdlEvent))
+        {
+            uint type = unchecked((uint)Marshal.ReadInt32(sdlEvent, 0));
+            if (type != SdlEventGamepadAdded && type != SdlEventGamepadRemoved)
+            {
+                continue;
+            }
+
+            uint which = unchecked((uint)Marshal.ReadInt32(sdlEvent, SdlEventWhichOffset));
+            if (type == SdlEventGamepadRemoved)
+            {
+                bool close = reconnect.ShouldCloseOnRemoved(which);
+                Log($"DEVICE REMOVED; instance={which}; opened={(reconnect.HasOpen ? reconnect.OpenedId.ToString() : "none")}" +
+                    (close ? $"; {openedVidPid}" : string.Empty) +
+                    $"; gamePid={gamePid}; action={(close ? "CLOSE-AND-WAIT" : "IGNORE-NOT-OPENED")}");
+                if (close)
+                {
+                    SdlNative.SDL_CloseGamepad(gamepad);
+                    gamepad = IntPtr.Zero;
+                    openedVidPid = string.Empty;
+                    reconnect.ClosedAfterRemoval();
+                    Log("TARGET WAIT");
+                }
+                continue;
+            }
+
+            ushort vendor = SdlNative.SDL_GetJoystickVendorForID(which);
+            ushort product = SdlNative.SDL_GetJoystickProductForID(which);
+            bool reopen = reconnect.ShouldReopenOnAdded();
+            Log($"DEVICE ADDED; instance={which}; vid=0x{vendor:X4}; pid=0x{product:X4}; gamePid={gamePid}; " +
+                $"action={(reopen ? "REOPEN" : reconnect.HasOpen ? "IGNORE-HANDLE-OPEN" : "IGNORE-STARTUP-RETRY")}");
+            if (!reopen)
+            {
+                continue;
+            }
+
+            gamepad = TryOpenValidatedGamepad();
+            if (gamepad == IntPtr.Zero)
+            {
+                Log("REOPEN FAILED; waiting for the next DEVICE ADDED");
+                Log("TARGET WAIT");
+                continue;
+            }
+
+            RecordOpened(gamepad, reconnect, out openedVidPid);
+            Log($"REOPEN SUCCESS; instance={reconnect.OpenedId}; {openedVidPid}");
+            Log("TARGET OPEN");
+        }
+    }
+
+    private static void RecordOpened(IntPtr gamepad, GamepadReconnectState reconnect, out string openedVidPid)
+    {
+        uint id = SdlNative.SDL_GetGamepadID(gamepad);
+        reconnect.Opened(id);
+        openedVidPid = $"vid=0x{SdlNative.SDL_GetJoystickVendorForID(id):X4}; pid=0x{SdlNative.SDL_GetJoystickProductForID(id):X4}";
     }
 
     private static IntPtr TryOpenValidatedGamepad()
@@ -257,6 +339,13 @@ internal static class Program
 
         [DllImport("SDL3", CallingConvention = CallingConvention.Cdecl)]
         internal static extern ushort SDL_GetJoystickProductForID(uint instanceId);
+
+        [DllImport("SDL3", CallingConvention = CallingConvention.Cdecl)]
+        [return: MarshalAs(UnmanagedType.I1)]
+        internal static extern bool SDL_PollEvent(IntPtr sdlEvent);
+
+        [DllImport("SDL3", CallingConvention = CallingConvention.Cdecl)]
+        internal static extern uint SDL_GetGamepadID(IntPtr gamepad);
     }
 
     private static class NativeMethods
