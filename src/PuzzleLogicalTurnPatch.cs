@@ -88,6 +88,16 @@ namespace NocturneModernController
                 return true;
             }
 
+            // The auto-map reads its own controls through the same logical
+            // pad -> SteamInputAssign.padcheck path (DDS3_PADCHECK_* ->
+            // GetConfigPadMap -> GetGamePadPadMap -> padcheck), so while it is
+            // shown the native LB/RB routes must reach the game untouched.
+            if (AutoMapState.IsOpen())
+            {
+                AutoMapState.LogPassThrough(__1);
+                return true;
+            }
+
             __result = false;
             LegacyShoulderTurnSuppression.LogSuppressed(__1);
             return false;
@@ -100,6 +110,12 @@ namespace NocturneModernController
             ref bool __result)
         {
             if (__result || __0 != 0 || __2 != SIPressType.DOWN)
+            {
+                return;
+            }
+
+            // No right-stick turn injection into the auto-map's own controls.
+            if (AutoMapState.IsOpen())
             {
                 return;
             }
