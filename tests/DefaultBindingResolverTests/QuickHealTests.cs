@@ -18,6 +18,7 @@ internal static class QuickHealTests
         OnePressOneSequence();
         SequenceTimingAndLimit();
         IneffectiveHpTargetSkipped();
+        MapOpenGuard();
         InputRouting();
         DetectionFailureFallsBack();
         OlderControllerStillIntegrates();
@@ -100,6 +101,37 @@ internal static class QuickHealTests
         Check(!limited.ActionPerformed(0) && !limited.IsActive &&
               limited.ActionCount == QuickHealSequence.MaximumActionsPerSequence,
             "the 64th action ends the sequence");
+    }
+
+    private static bool SampleMap(QuickHealSequence sequence, bool mapOpen, bool held, int now,
+        out bool started, out bool suppressed) =>
+        sequence.Sample(true, true, false, mapOpen, () => held, now, out started, out suppressed);
+
+    private static void MapOpenGuard()
+    {
+        var closed = new QuickHealSequence();
+        Check(SampleMap(closed, false, true, 0, out bool started, out bool suppressed) && started && !suppressed,
+            "map closed: a press starts a sequence");
+
+        var open = new QuickHealSequence();
+        Check(!SampleMap(open, true, true, 0, out started, out suppressed) && !started && suppressed &&
+              !open.IsActive,
+            "map open: a press does not start a sequence");
+        Check(!SampleMap(open, true, true, 10, out started, out suppressed) && !started && !suppressed,
+            "map open: holding is not a new press (logged once)");
+        Check(!SampleMap(open, false, true, 20, out started, out suppressed) && !started && !open.IsActive,
+            "map closes while still held: no start");
+        SampleMap(open, false, false, 30, out _, out _);
+        Check(SampleMap(open, false, true, 40, out started, out _) && started && open.IsActive,
+            "released and pressed again after the map closed: starts");
+
+        var running = new QuickHealSequence();
+        SampleMap(running, false, true, 0, out _, out _);
+        running.ActionPerformed(0);
+        SampleMap(running, false, false, 10, out _, out _);
+        Check(SampleMap(running, true, false, QuickHealSequence.HealIntervalMilliseconds, out started, out _) &&
+              !started && running.IsActive,
+            "a sequence already running continues while the map is open");
     }
 
     private static void IneffectiveHpTargetSkipped()

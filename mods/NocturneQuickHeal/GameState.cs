@@ -25,6 +25,26 @@ namespace NocturneQuickHeal
         }
     }
 
+    // Field auto-map shown: the game's own fldAutoMap.fldAutoMapChkMode()
+    // returns fldAutoMap.AutoMapSeq, which fldAutoMapSeqStart sets to 1 when
+    // the map opens and fldAutoMapSeqEnd / fldAutoMapFree reset to 0
+    // (GameAssembly disassembly: 0x1820194ED / 0x182018BD2). A failing read
+    // counts as closed, so Quick Heal keeps working.
+    internal static class AutoMapState
+    {
+        internal static bool IsOpen()
+        {
+            try
+            {
+                return fldAutoMap.fldAutoMapChkMode() != 0;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+    }
+
     // Standalone input: the game's logical SELECT button (the same pad map
     // Controller uses for ControllerButton.Select), so any pad the game
     // supports works. Not RB: without Controller, RB is also the game's own

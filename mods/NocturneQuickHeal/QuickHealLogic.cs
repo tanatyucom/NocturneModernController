@@ -48,9 +48,21 @@ namespace NocturneQuickHeal
         // on the frame a press starts a new sequence. A failing input read
         // skips the frame, as before.
         internal bool Sample(
-            bool enabled, bool explorationActive, bool settingsOpen, Func<bool> readHeld, int nowTick, out bool started)
+            bool enabled, bool explorationActive, bool settingsOpen, Func<bool> readHeld, int nowTick, out bool started) =>
+            Sample(enabled, explorationActive, settingsOpen, false, readHeld, nowTick, out started, out _);
+
+        // mapOpen (the field auto-map is shown, where the same button also
+        // switches floors): a press never STARTS a sequence, but the held
+        // state is still recorded, so a button held while the map closes is
+        // not seen as a new press - it has to be released and pressed again.
+        // A sequence that was already running finishes as usual.
+        // suppressedByMap is true on the frame such a press was ignored.
+        internal bool Sample(
+            bool enabled, bool explorationActive, bool settingsOpen, bool mapOpen, Func<bool> readHeld, int nowTick,
+            out bool started, out bool suppressedByMap)
         {
             started = false;
+            suppressedByMap = false;
             if (!enabled || !explorationActive || settingsOpen)
             {
                 return false;
@@ -66,7 +78,11 @@ namespace NocturneQuickHeal
                 return false;
             }
 
-            if (held && !_wasHeld)
+            if (held && !_wasHeld && mapOpen)
+            {
+                suppressedByMap = true;
+            }
+            else if (held && !_wasHeld)
             {
                 _active = true;
                 _actionCount = 0;
