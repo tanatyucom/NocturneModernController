@@ -127,7 +127,8 @@ namespace NocturneQuickHeal
                     }
                     Il2Cppnewdata_H.datUnitWork_t? target = units[targetIndex];
                     if (target == null || target.Pointer == IntPtr.Zero ||
-                        target.hp == 0 || target.hp >= target.maxhp)
+                        target.hp == 0 || target.hp >= target.maxhp ||
+                        Sequence.IsHpTargetIneffective(targetIndex))
                     {
                         continue;
                     }
@@ -144,7 +145,19 @@ namespace NocturneQuickHeal
                     ushort hpBefore = target.hp;
                     ushort mpBefore = candidate.Source.mp;
                     cmpMisc.cmpRecover(candidate.SkillId, candidate.Source, target);
-                    if (target.hp != hpBefore && candidate.Rank.Cost > 0 &&
+                    if (target.hp == hpBefore)
+                    {
+                        // No HP moved and no MP was spent: not an action.
+                        // Skip this target and try the next one this frame.
+                        Sequence.MarkHpTargetIneffective(targetIndex);
+                        MelonLogger.Msg(
+                            LogPrefix + "Q7 AUTO-RECOVER no effect; target skipped " +
+                            $"skill={candidate.SkillId} src={candidate.SourceIndex} dst={targetIndex} " +
+                            $"hp={hpBefore}/{target.maxhp}");
+                        continue;
+                    }
+
+                    if (candidate.Rank.Cost > 0 &&
                         candidate.Source.mp >= candidate.Rank.Cost)
                     {
                         candidate.Source.mp = unchecked(
@@ -264,6 +277,7 @@ namespace NocturneQuickHeal
             var stocklist = global.stocklist;
             var units = global.unitwork;
             RecoveryCandidate? best = null;
+            bool targetInParty = RecoveryTarget.IsInActiveParty(target.flag);
 
             for (int sourceStockIndex = 0; sourceStockIndex < global.stockcnt; sourceStockIndex++)
             {
@@ -286,6 +300,11 @@ namespace NocturneQuickHeal
                     ushort skillId = unchecked((ushort)source.skill[skillIndex]);
                     try
                     {
+                        if (!RecoveryTarget.CanReach(cmpMisc.cmpGetSkillTargetArea(skillId), targetInParty))
+                        {
+                            continue;
+                        }
+
                         int effect = datCalc.datGetSkillKouka(skillId, 0, source, target);
                         if (effect <= 0 || cmpMisc.cmpChkSkillCost(skillId, source) == 0)
                         {
